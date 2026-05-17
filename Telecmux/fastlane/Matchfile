@@ -3,5 +3,5 @@ storage_mode("git")
 
 type("appstore")
 
-app_identifier("com.zeromissionllc.hermit")
+app_identifier("com.diwu.telecmux")
 team_id(ENV["TEAM_ID"])

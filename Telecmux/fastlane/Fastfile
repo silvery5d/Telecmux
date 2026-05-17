@@ -1,5 +1,10 @@
 default_platform(:ios)
 
+# Bundle ID + scheme + project — single source of truth for both lanes.
+BUNDLE_ID = "com.diwu.telecmux"
+PROJECT   = "Telecmux.xcodeproj"
+SCHEME    = "Telecmux"
+
 platform :ios do
   before_all do
     setup_ci if ENV["CI"]
@@ -16,20 +21,19 @@ platform :ios do
 
     build_number = Time.now.strftime("%Y%m%d%H%M")
     increment_build_number(
-      xcodeproj: "Hermit.xcodeproj",
+      xcodeproj: PROJECT,
       build_number: build_number,
     )
 
     build_app(
-      project: "Hermit.xcodeproj",
-      scheme: "Hermit",
+      project: PROJECT,
+      scheme: SCHEME,
       export_method: "app-store",
       clean: true,
-      xcargs: "DEVELOPMENT_TEAM=#{ENV['TEAM_ID']}",
+      xcargs: "DEVELOPMENT_TEAM=#{ENV['TEAM_ID']} CODE_SIGN_STYLE=Automatic",
       export_options: {
-        provisioningProfiles: {
-          "com.zeromissionllc.hermit" => "Hermit App Store",
-        },
+        signingStyle: "automatic",
+        teamID: ENV["TEAM_ID"],
       },
     )
 
@@ -50,20 +54,19 @@ platform :ios do
 
     build_number = Time.now.strftime("%Y%m%d%H%M")
     increment_build_number(
-      xcodeproj: "Hermit.xcodeproj",
+      xcodeproj: PROJECT,
       build_number: build_number,
     )
 
     build_app(
-      project: "Hermit.xcodeproj",
-      scheme: "Hermit",
+      project: PROJECT,
+      scheme: SCHEME,
       export_method: "app-store",
       clean: true,
-      xcargs: "DEVELOPMENT_TEAM=#{ENV['TEAM_ID']}",
+      xcargs: "DEVELOPMENT_TEAM=#{ENV['TEAM_ID']} CODE_SIGN_STYLE=Automatic",
       export_options: {
-        provisioningProfiles: {
-          "com.zeromissionllc.hermit" => "Hermit App Store",
-        },
+        signingStyle: "automatic",
+        teamID: ENV["TEAM_ID"],
       },
     )
 
