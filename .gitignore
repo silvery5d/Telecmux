@@ -1,0 +1,50 @@
+# macOS
+.DS_Store
+
+# Xcode build / user state
+build/
+DerivedData/
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM
+*.dSYM.zip
+*.xcscmblueprint
+*.xcuserstate
+xcuserdata/
+
+# Swift Package Manager
+.swiftpm/
+.build/
+# Package.resolved is committed on purpose (lockfile)
+
+# CocoaPods (not used)
+Pods/
+
+# Fastlane
+Telecmux/fastlane/report.xml
+Telecmux/fastlane/Preview.html
+Telecmux/fastlane/screenshots
+Telecmux/fastlane/test_output
+Telecmux/fastlane/README.md
+Telecmux/fastlane/.env
+Telecmux/*.ipa
+Telecmux/*.app.dSYM.zip
+
+# Bundler
+.bundle/
+Telecmux/vendor/bundle
+vendor/bundle/
+
+# Local dev data + secrets
+*.entitlements.bak
+.telecmux-dev.json
+Telecmux/.telecmux-dev.json
+.env
+
+# tmp script artifacts
+/tmp/*.png

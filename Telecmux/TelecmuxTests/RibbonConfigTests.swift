@@ -1,0 +1,78 @@
+import Testing
+import Foundation
+@testable import Telecmux
+
+@Suite("RibbonConfig Tests")
+struct RibbonConfigTests {
+    @Test func defaultConfigHasFiveButtons() {
+        let config = RibbonConfig.default
+        #expect(config.buttons.count == 5)
+    }
+
+    @Test func defaultButtonLabels() {
+        let labels = RibbonConfig.default.buttons.map(\.label)
+        #expect(labels == ["1", "2", "return", "escape", "mic.fill"])
+    }
+
+    @Test func defaultConfigHasName() {
+        #expect(RibbonConfig.default.name == "Default")
+    }
+
+    @Test func escButtonSendsEscByte() throws {
+        let escButton = RibbonConfig.default.buttons[3]
+        guard case .sendString(let value) = escButton.action else {
+            Issue.record("Expected sendString action")
+            return
+        }
+        #expect(value == "\u{1B}")
+        #expect(value.unicodeScalars.first?.value == 0x1B)
+    }
+
+    @Test func numberButtonsSendDigitOnly() throws {
+        for i in 0..<2 {
+            let button = RibbonConfig.default.buttons[i]
+            guard case .sendString(let value) = button.action else {
+                Issue.record("Expected sendString action for button \(i)")
+                return
+            }
+            #expect(value == "\(i + 1)")
+        }
+    }
+
+    @Test func micButtonIsVoiceInput() {
+        let mic = RibbonConfig.default.buttons[4]
+        guard case .voiceInput = mic.action else {
+            Issue.record("Expected voiceInput action")
+            return
+        }
+        #expect(mic.labelType == .sfSymbol)
+    }
+
+    @Test func planModeHasFiveNumberButtons() {
+        let config = RibbonConfig.planMode
+        #expect(config.buttons.count == 5)
+        #expect(config.name == "Plan Mode")
+        for i in 0..<5 {
+            guard case .sendString(let value) = config.buttons[i].action else {
+                Issue.record("Expected sendString action for button \(i)")
+                return
+            }
+            #expect(value == "\(i + 1)")
+        }
+    }
+
+    @Test func presetsContainsAllConfigs() {
+        #expect(RibbonConfig.presets.count == 3)
+        #expect(RibbonConfig.presets[0].name == "Default")
+        #expect(RibbonConfig.presets[1].name == "Plan Mode")
+        #expect(RibbonConfig.presets[2].name == "Cmux Agent")
+    }
+
+    @Test func ribbonConfigRoundTrip() throws {
+        let config = RibbonConfig.default
+        let data = try JSONEncoder.telecmux.encode(config)
+        let decoded = try JSONDecoder.telecmux.decode(RibbonConfig.self, from: data)
+        #expect(decoded.buttons.count == config.buttons.count)
+        #expect(decoded.name == config.name)
+    }
+}
