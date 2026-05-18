@@ -1,79 +1,51 @@
 import Foundation
 
-struct RibbonConfig: Codable {
+/// A row of soft-key buttons rendered below the pane screen.
+struct RibbonConfig: Codable, Hashable {
     var name: String
     var buttons: [RibbonButton]
 
-    static let `default` = RibbonConfig(name: "Default", buttons: [
-        RibbonButton(label: "1", labelType: .text, action: .sendString("1")),
-        RibbonButton(label: "2", labelType: .text, action: .sendString("2")),
-        RibbonButton(label: "return", labelType: .sfSymbol, action: .sendString("\r")),
-        RibbonButton(label: "escape", labelType: .sfSymbol, action: .sendString("\u{1B}")),
-        RibbonButton(label: "mic.fill", labelType: .sfSymbol, action: .voiceInput),
-    ])
-
-    static let planMode = RibbonConfig(name: "Plan Mode", buttons: [
-        RibbonButton(label: "1", labelType: .text, action: .sendString("1")),
-        RibbonButton(label: "2", labelType: .text, action: .sendString("2")),
-        RibbonButton(label: "3", labelType: .text, action: .sendString("3")),
-        RibbonButton(label: "4", labelType: .text, action: .sendString("4")),
-        RibbonButton(label: "5", labelType: .text, action: .sendString("5")),
-    ])
-
-    /// Default ribbon for cmux-mode sessions. Sends/keys are routed through
-    /// the active pane's CmuxController instead of writing to a raw PTY.
+    /// The default ribbon for cmux pane focus.
     static let cmuxAgent = RibbonConfig(name: "Cmux Agent", buttons: [
-        RibbonButton(label: "1", labelType: .text, action: .cmuxSend(text: "1")),
-        RibbonButton(label: "2", labelType: .text, action: .cmuxSend(text: "2")),
-        RibbonButton(label: "3", labelType: .text, action: .cmuxSend(text: "3")),
-        // cmux send understands \n / \r as Enter; one send beats send + send-key.
-        RibbonButton(label: "return", labelType: .sfSymbol, action: .cmuxSend(text: "\n")),
-        RibbonButton(label: "escape", labelType: .sfSymbol, action: .cmuxKey(key: "escape")),
-        RibbonButton(label: "bell", labelType: .sfSymbol, action: .cmuxJumpUnread),
-        RibbonButton(label: "mic.fill", labelType: .sfSymbol, action: .voiceInput),
+        RibbonButton(label: "1",        kind: .text,     action: .sendText("1")),
+        RibbonButton(label: "2",        kind: .text,     action: .sendText("2")),
+        RibbonButton(label: "3",        kind: .text,     action: .sendText("3")),
+        RibbonButton(label: "return",   kind: .sfSymbol, action: .sendText("\n")),
+        RibbonButton(label: "escape",   kind: .sfSymbol, action: .sendKey("escape")),
+        RibbonButton(label: "bell",     kind: .sfSymbol, action: .jumpToUnread),
+        RibbonButton(label: "mic.fill", kind: .sfSymbol, action: .voiceInput),
     ])
 
-    static let presets: [RibbonConfig] = [.default, .planMode, .cmuxAgent]
+    static let presets: [RibbonConfig] = [.cmuxAgent]
 }
 
-struct RibbonButton: Codable, Identifiable {
-    var id: UUID
+struct RibbonButton: Identifiable, Codable, Hashable {
+    var id: UUID = UUID()
     var label: String
-    var labelType: LabelType
+    var kind: LabelKind
     var action: ButtonAction
 
-    init(
-        id: UUID = UUID(),
-        label: String,
-        labelType: LabelType,
-        action: ButtonAction
-    ) {
+    init(id: UUID = UUID(), label: String, kind: LabelKind, action: ButtonAction) {
         self.id = id
         self.label = label
-        self.labelType = labelType
+        self.kind = kind
         self.action = action
     }
 }
 
-enum LabelType: String, Codable {
+enum LabelKind: String, Codable {
     case text
     case sfSymbol
 }
 
-enum ButtonAction: Codable {
-    /// Write a raw string to the active SSH PTY (tmux / shell mode).
-    case sendString(String)
-
-    /// `cmux send --pane <ref> -- <text>` against the active pane (cmux mode).
-    case cmuxSend(text: String)
-
-    /// `cmux send-key --pane <ref> <key>` against the active pane (cmux mode).
-    /// Key names follow cmux conventions: `Enter`, `Escape`, `Tab`, `Up`, etc.
-    case cmuxKey(key: String)
-
-    /// `cmux jump-to-unread` — focuses the next pane with an unread notification.
-    case cmuxJumpUnread
-
-    /// Open the voice-input modal.
+/// What a ribbon button does when tapped.
+enum ButtonAction: Codable, Hashable {
+    /// `cmux send --surface <ref> -- <text>`
+    case sendText(String)
+    /// `cmux send-key --surface <ref> <key>`
+    case sendKey(String)
+    /// `cmux jump-to-unread`
+    case jumpToUnread
+    /// Open the voice input modal.
     case voiceInput
 }

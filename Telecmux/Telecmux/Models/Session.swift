@@ -1,60 +1,41 @@
 import Foundation
 
-/// How this Session connects to the remote host.
-/// - `tmux`: legacy mode — SSH + `tmux new-session -As <name>` over a PTY.
-/// - `cmuxBoard`: SSH + cmux CLI; shows workspace/pane/notification overview.
-/// - `cmuxPane`: SSH + cmux CLI; focused on a single cmux pane.
-/// - `shell`: SSH + raw shell, no multiplexer.
+/// What kind of cmux target this session points at.
+/// - `board`: workspace + pane overview, with notifications surface
+/// - `pane`: focused on a single cmux surface
 enum SessionMode: String, Codable, CaseIterable {
-    case tmux
-    case cmuxBoard
-    case cmuxPane
-    case shell
+    case board
+    case pane
 
     var displayLabel: String {
         switch self {
-        case .tmux: "tmux"
-        case .cmuxBoard: "cmux board"
-        case .cmuxPane: "cmux pane"
-        case .shell: "shell"
+        case .board: "cmux board"
+        case .pane:  "cmux pane"
         }
     }
 }
 
-struct Session: Codable, Identifiable {
-    var id: UUID
+/// A user-saved cmux session. Each one binds to one Host and one optional
+/// surface ref (for `pane` mode).
+struct Session: Identifiable, Codable, Hashable {
+    var id: UUID = UUID()
     var displayName: String
     var hostID: UUID
-    var mode: SessionMode
-    var tmuxSessionName: String?      // used only when mode == .tmux
-    var cmuxSurfaceRef: String?       // used only when mode == .cmuxPane
-                                      // e.g. "surface:34" ref or a UUID;
-                                      // cmux's read/send/send-key all key off
-                                      // surface, not pane
-    var createdAt: Date
+    var mode: SessionMode = .board
+    var cmuxSurfaceRef: String? = nil
+    var createdAt: Date = Date()
 
-    init(
-        id: UUID = UUID(),
-        displayName: String,
-        hostID: UUID,
-        mode: SessionMode = .tmux,
-        tmuxSessionName: String? = nil,
-        cmuxSurfaceRef: String? = nil,
-        createdAt: Date = Date()
-    ) {
-        self.id = id
+    enum CodingKeys: String, CodingKey {
+        case id, displayName, hostID, mode, cmuxSurfaceRef, createdAt
+        // Legacy keys from earlier dev builds and the upstream tmux schema.
+        case tmuxSessionName, cmuxPaneRef
+    }
+
+    init(displayName: String, hostID: UUID, mode: SessionMode = .board, cmuxSurfaceRef: String? = nil) {
         self.displayName = displayName
         self.hostID = hostID
         self.mode = mode
-        self.tmuxSessionName = tmuxSessionName
         self.cmuxSurfaceRef = cmuxSurfaceRef
-        self.createdAt = createdAt
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case id, displayName, hostID, mode, tmuxSessionName, cmuxSurfaceRef, createdAt
-        // legacy key for migrating older builds
-        case cmuxPaneRef
     }
 
     init(from decoder: Decoder) throws {
@@ -62,15 +43,13 @@ struct Session: Codable, Identifiable {
         id = try c.decode(UUID.self, forKey: .id)
         displayName = try c.decode(String.self, forKey: .displayName)
         hostID = try c.decode(UUID.self, forKey: .hostID)
-        tmuxSessionName = try c.decodeIfPresent(String.self, forKey: .tmuxSessionName)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
         cmuxSurfaceRef = try c.decodeIfPresent(String.self, forKey: .cmuxSurfaceRef)
             ?? c.decodeIfPresent(String.self, forKey: .cmuxPaneRef)
-        createdAt = try c.decode(Date.self, forKey: .createdAt)
-
-        if let raw = try c.decodeIfPresent(SessionMode.self, forKey: .mode) {
-            mode = raw
-        } else {
-            mode = (tmuxSessionName != nil) ? .tmux : .shell
+        let rawMode = try c.decodeIfPresent(String.self, forKey: .mode)
+        switch rawMode {
+        case "pane", "cmuxPane": mode = .pane
+        default:                 mode = .board
         }
     }
 
@@ -80,7 +59,6 @@ struct Session: Codable, Identifiable {
         try c.encode(displayName, forKey: .displayName)
         try c.encode(hostID, forKey: .hostID)
         try c.encode(mode, forKey: .mode)
-        try c.encodeIfPresent(tmuxSessionName, forKey: .tmuxSessionName)
         try c.encodeIfPresent(cmuxSurfaceRef, forKey: .cmuxSurfaceRef)
         try c.encode(createdAt, forKey: .createdAt)
     }

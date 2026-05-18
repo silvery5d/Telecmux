@@ -137,11 +137,8 @@ final class DataStore {
     }
 
     private func migrateHost(_ host: Host) -> Host {
-        var host = host
-        // Always sync ribbon configs to current defaults
-        // During active development, this ensures all hosts pick up button changes
-        host.ribbonConfigs = RibbonConfig.presets
-        return host
+        // No-op for now — kept as a hook for future schema upgrades.
+        host
     }
 
     private func createFileIfNeeded() {

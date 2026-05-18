@@ -1,43 +1,36 @@
 import Foundation
 
-struct Host: Codable, Identifiable {
-    var id: UUID
+/// A remote Mac that runs cmux. The SSH credentials live in this record;
+/// per-session state lives in `Session`.
+struct Host: Identifiable, Codable, Hashable {
+    var id: UUID = UUID()
     var displayName: String
     var hostname: String
-    var port: Int
+    var port: Int = 22
     var username: String
-    var privateKeyRef: String
-    var ribbonConfigs: [RibbonConfig]
-    var createdAt: Date
+    /// Keychain account key that resolves to the OpenSSH private key bytes.
+    var privateKeyRef: String = ""
+    /// Ribbon shown on PaneFocusView for sessions targeting this host.
+    var ribbonConfig: RibbonConfig = .cmuxAgent
+    var createdAt: Date = Date()
 
-    /// First ribbon config, for backward compatibility.
-    var ribbonConfig: RibbonConfig {
-        ribbonConfigs.first ?? .default
+    enum CodingKeys: String, CodingKey {
+        case id, displayName, hostname, port, username, privateKeyRef
+        case ribbonConfig, createdAt
+        // Legacy: earlier dev builds wrote an array of ribbons.
+        case ribbonConfigs
     }
 
-    init(
-        id: UUID = UUID(),
-        displayName: String,
-        hostname: String,
-        port: Int = 22,
-        username: String,
-        privateKeyRef: String = "",
-        ribbonConfigs: [RibbonConfig] = RibbonConfig.presets,
-        createdAt: Date = Date()
-    ) {
-        self.id = id
+    init(displayName: String,
+         hostname: String,
+         port: Int = 22,
+         username: String,
+         privateKeyRef: String = "") {
         self.displayName = displayName
         self.hostname = hostname
         self.port = port
         self.username = username
         self.privateKeyRef = privateKeyRef
-        self.ribbonConfigs = ribbonConfigs
-        self.createdAt = createdAt
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case id, displayName, hostname, port, username, privateKeyRef
-        case ribbonConfigs, ribbonConfig, createdAt
     }
 
     init(from decoder: Decoder) throws {
@@ -50,13 +43,13 @@ struct Host: Codable, Identifiable {
         privateKeyRef = try c.decode(String.self, forKey: .privateKeyRef)
         createdAt = try c.decode(Date.self, forKey: .createdAt)
 
-        // Migrate from single ribbonConfig to ribbonConfigs array
-        if let configs = try? c.decode([RibbonConfig].self, forKey: .ribbonConfigs) {
-            ribbonConfigs = configs
-        } else if let single = try? c.decode(RibbonConfig.self, forKey: .ribbonConfig) {
-            ribbonConfigs = [single, .planMode]
+        if let single = try? c.decode(RibbonConfig.self, forKey: .ribbonConfig) {
+            ribbonConfig = single
+        } else if let arr = try? c.decode([RibbonConfig].self, forKey: .ribbonConfigs),
+                  let first = arr.first {
+            ribbonConfig = first
         } else {
-            ribbonConfigs = RibbonConfig.presets
+            ribbonConfig = .cmuxAgent
         }
     }
 
@@ -68,7 +61,7 @@ struct Host: Codable, Identifiable {
         try c.encode(port, forKey: .port)
         try c.encode(username, forKey: .username)
         try c.encode(privateKeyRef, forKey: .privateKeyRef)
-        try c.encode(ribbonConfigs, forKey: .ribbonConfigs)
+        try c.encode(ribbonConfig, forKey: .ribbonConfig)
         try c.encode(createdAt, forKey: .createdAt)
     }
 }

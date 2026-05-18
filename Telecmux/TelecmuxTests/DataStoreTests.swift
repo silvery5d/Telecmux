@@ -2,11 +2,11 @@ import Testing
 import Foundation
 @testable import Telecmux
 
-@Suite("DataStore Backup Tests")
+@Suite("Backup Tests")
 struct DataStoreTests {
     @Test func backupRoundTrip() throws {
         let host = Host(displayName: "Test", hostname: "10.0.0.1", username: "user")
-        let session = Session(displayName: "Session1", hostID: host.id, tmuxSessionName: "dev")
+        let session = Session(displayName: "Session1", hostID: host.id, mode: .board)
 
         let backup = BackupData(
             version: 1,
@@ -22,10 +22,10 @@ struct DataStoreTests {
         #expect(decoded.hosts.count == 1)
         #expect(decoded.sessions.count == 1)
         #expect(decoded.hosts[0].displayName == "Test")
-        #expect(decoded.sessions[0].tmuxSessionName == "dev")
+        #expect(decoded.sessions[0].mode == .board)
     }
 
-    @Test func backupExcludesPrivateKeys() throws {
+    @Test func backupOmitsKeyMaterial() throws {
         let host = Host(
             displayName: "Test",
             hostname: "10.0.0.1",
@@ -36,8 +36,8 @@ struct DataStoreTests {
         let data = try JSONEncoder.telecmux.encode(backup)
         let json = String(data: data, encoding: .utf8)!
 
-        // privateKeyRef is stored but the actual key material stays in Keychain
         #expect(json.contains("keychain-ref-abc"))
         #expect(!json.contains("BEGIN RSA PRIVATE KEY"))
+        #expect(!json.contains("BEGIN OPENSSH PRIVATE KEY"))
     }
 }

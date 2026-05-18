@@ -19,7 +19,6 @@ struct PaneFocusView: View {
     @State private var controller: CmuxController?
     @State private var voiceText = ""
     @State private var showingVoiceModal = false
-    @State private var activeRibbonIndex = 0
     @State private var inputText = ""
     @FocusState private var inputFocused: Bool
 
@@ -37,12 +36,8 @@ struct PaneFocusView: View {
     private var ssh: SSHConnectionManager { ownedSSH }
     private var host: Host? { dataStore.host(for: session) }
 
-    private var ribbonConfigs: [RibbonConfig] {
-        host?.ribbonConfigs ?? [RibbonConfig.cmuxAgent]
-    }
-
     private var activeRibbon: RibbonConfig {
-        ribbonConfigs[activeRibbonIndex % ribbonConfigs.count]
+        host?.ribbonConfig ?? .cmuxAgent
     }
 
     var body: some View {
@@ -66,12 +61,9 @@ struct PaneFocusView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    activeRibbonIndex = (activeRibbonIndex + 1) % ribbonConfigs.count
-                } label: {
-                    Image(systemName: "rectangle.stack")
-                }
-                .accessibilityLabel("Switch ribbon: \(activeRibbon.name)")
+                Text(activeRibbon.name)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .task {
@@ -182,7 +174,7 @@ struct PaneFocusView: View {
                     handle(button)
                 } label: {
                     Group {
-                        switch button.labelType {
+                        switch button.kind {
                         case .text:
                             Text(button.label)
                                 .font(.system(.body, design: .monospaced, weight: .medium))
@@ -226,26 +218,19 @@ struct PaneFocusView: View {
 
     private func handle(_ button: RibbonButton) {
         switch button.action {
-        case .sendString(let s):
-            // tmux/shell-shaped action used on a cmux pane: treat as send-text.
-            Task {
-                guard let ref = surfaceRef else { return }
-                await controller?.send(surfaceRef: ref, text: s)
-                debounceRefresh()
-            }
-        case .cmuxSend(let text):
+        case .sendText(let text):
             Task {
                 guard let ref = surfaceRef else { return }
                 await controller?.send(surfaceRef: ref, text: text)
                 debounceRefresh()
             }
-        case .cmuxKey(let key):
+        case .sendKey(let key):
             Task {
                 guard let ref = surfaceRef else { return }
                 await controller?.sendKey(surfaceRef: ref, key: key)
                 debounceRefresh()
             }
-        case .cmuxJumpUnread:
+        case .jumpToUnread:
             Task { await controller?.jumpToUnread() }
         case .voiceInput:
             let settings = AppSettings.load()

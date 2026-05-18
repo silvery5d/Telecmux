@@ -5,8 +5,7 @@ struct NewSessionView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var displayName = ""
-    @State private var mode: SessionMode = .cmuxBoard
-    @State private var tmuxSessionName = ""
+    @State private var mode: SessionMode = .board
     @State private var cmuxSurfaceRef = ""
     @State private var selectedHostID: UUID?
     @State private var showingNewHost = false
@@ -40,7 +39,6 @@ struct NewSessionView: View {
                             }
                         }
                     }
-
                     Button("Create New Host") {
                         showingNewHost = true
                     }
@@ -61,7 +59,7 @@ struct NewSessionView: View {
                     Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { saveSession() }
+                    Button("Save", action: saveSession)
                         .disabled(displayName.isEmpty || selectedHostID == nil)
                 }
             }
@@ -76,13 +74,7 @@ struct NewSessionView: View {
     @ViewBuilder
     private var modeSpecificFields: some View {
         switch mode {
-        case .tmux:
-            Section("tmux") {
-                TextField("Session name (e.g. claude)", text: $tmuxSessionName)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-            }
-        case .cmuxPane:
+        case .pane:
             Section {
                 TextField("Surface ref (e.g. surface:34 or UUID)", text: $cmuxSurfaceRef)
                     .textInputAutocapitalization(.never)
@@ -90,29 +82,27 @@ struct NewSessionView: View {
             } header: {
                 Text("cmux pane")
             } footer: {
-                Text("Get the surface ref from `cmux --json list-panes` on the Mac, or open this host in cmux Board mode first and tap a pane.")
+                Text("Get the surface ref from `cmux --json list-panes` on the Mac, or open this host in board mode first and tap a pane.")
                     .font(.caption)
             }
-        case .cmuxBoard:
+        case .board:
             Section {
                 EmptyView()
             } footer: {
-                Text("Shows all panes + pending agent notifications. Requires cmux ≥ 0.64 with Settings → Automation → Socket control mode set to \"Automation mode\".")
+                Text("Lists all panes and pending agent notifications. Requires cmux ≥ 0.64 with Settings → Automation → Socket control mode set to \"Automation mode\".")
                     .font(.caption)
             }
-        case .shell:
-            EmptyView()
         }
     }
 
     private func saveSession() {
         guard let hostID = selectedHostID else { return }
+        let trimmedRef = cmuxSurfaceRef.trimmingCharacters(in: .whitespaces)
         let session = Session(
             displayName: displayName,
             hostID: hostID,
             mode: mode,
-            tmuxSessionName: mode == .tmux && !tmuxSessionName.isEmpty ? tmuxSessionName : nil,
-            cmuxSurfaceRef: mode == .cmuxPane && !cmuxSurfaceRef.isEmpty ? cmuxSurfaceRef : nil
+            cmuxSurfaceRef: mode == .pane && !trimmedRef.isEmpty ? trimmedRef : nil
         )
         dataStore.addSession(session)
         dismiss()

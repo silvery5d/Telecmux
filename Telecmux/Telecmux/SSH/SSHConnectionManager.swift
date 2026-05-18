@@ -17,83 +17,9 @@ final class SSHConnectionManager {
     }
 
     var state: ConnectionState = .disconnected
-    var onDataReceived: ((String) -> Void)?
-    var terminalCols: Int = 80
-    var terminalRows: Int = 24
 
     private var client: SSHClient?
-    private var stdinWriter: TTYStdinWriter?
     private var connectionTask: Task<Void, Never>?
-
-    func connect(host: Host, tmuxSessionName: String?) async {
-        state = .connecting
-
-        do {
-            logger.info("Connecting to \(host.hostname):\(host.port) as \(host.username)")
-            let authMethod = try buildAuthMethod(for: host)
-            logger.info("Auth method built successfully")
-
-            let sshClient = try await SSHClient.connect(
-                host: host.hostname,
-                port: host.port,
-                authenticationMethod: authMethod,
-                hostKeyValidator: .acceptAnything(),
-                reconnect: .never
-            )
-            self.client = sshClient
-            state = .connected
-
-            let command: String
-            if let tmux = tmuxSessionName {
-                command = "tmux new-session -As \(tmux)"
-            } else {
-                command = ""
-            }
-
-            try await sshClient.withPTY(
-                .init(
-                    wantReply: true,
-                    term: "xterm-256color",
-                    terminalCharacterWidth: terminalCols,
-                    terminalRowHeight: terminalRows,
-                    terminalPixelWidth: 0,
-                    terminalPixelHeight: 0,
-                    terminalModes: .init([:])
-                )
-            ) { [weak self] inbound, outbound in
-                self?.stdinWriter = outbound
-
-                // Send tmux attach command if specified
-                if !command.isEmpty {
-                    var buf = ByteBufferAllocator().buffer(capacity: command.utf8.count + 1)
-                    buf.writeString(command + "\n")
-                    try await outbound.write(buf)
-                }
-
-                for try await event in inbound {
-                    switch event {
-                    case .stdout(let buffer):
-                        if let str = buffer.getString(at: buffer.readerIndex, length: buffer.readableBytes) {
-                            await MainActor.run {
-                                self?.onDataReceived?(str)
-                            }
-                        }
-                    case .stderr(let buffer):
-                        if let str = buffer.getString(at: buffer.readerIndex, length: buffer.readableBytes) {
-                            await MainActor.run {
-                                self?.onDataReceived?(str)
-                            }
-                        }
-                    }
-                }
-            }
-        } catch {
-            logger.error("SSH connection failed: \(error)")
-            await MainActor.run {
-                self.state = .failed(error.localizedDescription)
-            }
-        }
-    }
 
     /// Open an SSH connection without binding a PTY. Used by cmux-mode
     /// sessions that drive the remote host through short-lived `executeCommand`
@@ -129,33 +55,9 @@ final class SSHConnectionManager {
         return buffer.getString(at: buffer.readerIndex, length: buffer.readableBytes) ?? ""
     }
 
-    func resize(cols: Int, rows: Int) {
-        terminalCols = cols
-        terminalRows = rows
-        guard let writer = stdinWriter else { return }
-        Task {
-            try? await writer.changeSize(cols: cols, rows: rows, pixelWidth: 0, pixelHeight: 0)
-        }
-    }
-
-    func send(data: String) {
-        let hex = data.utf8.map { String(format: "%02x", $0) }.joined(separator: " ")
-        logger.info("send() data='\(data)' hex=[\(hex)]")
-        guard let writer = stdinWriter else {
-            logger.warning("send() called but stdinWriter is nil")
-            return
-        }
-        Task {
-            var buf = ByteBufferAllocator().buffer(capacity: data.utf8.count)
-            buf.writeString(data)
-            try? await writer.write(buf)
-        }
-    }
-
     func disconnect() {
         connectionTask?.cancel()
         connectionTask = nil
-        stdinWriter = nil
         Task {
             try? await client?.close()
             client = nil
