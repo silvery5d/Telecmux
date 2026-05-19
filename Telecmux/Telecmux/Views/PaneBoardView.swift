@@ -284,10 +284,10 @@ struct PaneBoardView: View {
 
     private var stateColor: Color {
         switch ssh.state {
-        case .connected: .green
+        case .ready:      .green
         case .connecting: .yellow
-        case .disconnected: .gray
-        case .failed: .red
+        case .idle:       .gray
+        case .failed:     .red
         }
     }
 }

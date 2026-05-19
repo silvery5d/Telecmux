@@ -3,20 +3,16 @@ import SwiftUI
 @main
 struct TelecmuxApp: App {
     @State private var dataStore = DataStore()
-    @State private var voiceCoordinator = VoiceInputCoordinator()
-    @State private var showingAbout = !AboutView.hasSeenAbout
+    @State private var voice = VoiceInputCoordinator()
+    @State private var showAboutOnLaunch = !AboutView.hasSeenAbout
 
     var body: some Scene {
         WindowGroup {
             SessionListView()
                 .environment(dataStore)
-                .environment(voiceCoordinator)
-                .onOpenURL { url in
-                    voiceCoordinator.handleCallbackURL(url)
-                }
-                .sheet(isPresented: $showingAbout) {
-                    AboutView.hasSeenAbout = true
-                } content: {
+                .environment(voice)
+                .onOpenURL(perform: voice.handleCallbackURL)
+                .sheet(isPresented: $showAboutOnLaunch, onDismiss: { AboutView.hasSeenAbout = true }) {
                     AboutView()
                 }
         }

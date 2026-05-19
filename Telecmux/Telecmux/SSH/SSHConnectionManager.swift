@@ -7,165 +7,274 @@ import os
 
 private let logger = Logger(subsystem: "com.diwu.telecmux", category: "SSH")
 
+/// Owns a long-lived non-interactive SSH session to a single Host.
+///
+/// Telecmux drives cmux through short `cmux <subcommand>` exec calls — we
+/// don't open a PTY. Each Pane view creates its own manager, connects, then
+/// fires `exec()` on user actions and on the polling timer.
+///
+/// All state mutations happen on the main actor so views can read directly.
+@MainActor
 @Observable
 final class SSHConnectionManager {
-    enum ConnectionState: Equatable {
-        case disconnected
+
+    enum State: Equatable {
+        case idle
         case connecting
-        case connected
+        case ready
         case failed(String)
     }
 
-    var state: ConnectionState = .disconnected
+    /// What's happening right now. Views render based on this.
+    private(set) var state: State = .idle
 
     private var client: SSHClient?
-    private var connectionTask: Task<Void, Never>?
 
-    /// Open an SSH connection without binding a PTY. Used by cmux-mode
-    /// sessions that drive the remote host through short-lived `executeCommand`
-    /// calls (see `exec(_:)`) instead of an interactive shell.
-    func connectExecOnly(host: Host) async {
+    // MARK: - public API
+
+    /// Open an exec-only SSH session. Idempotent — re-calling while already
+    /// connected is a no-op so views can `await` it from `.task` without
+    /// guarding.
+    func connect(to host: Host) async {
+        if case .ready = state { return }
         state = .connecting
+
         do {
-            logger.info("Connecting (exec-only) to \(host.hostname):\(host.port) as \(host.username)")
-            let authMethod = try buildAuthMethod(for: host)
-            let sshClient = try await SSHClient.connect(
+            let auth = try buildAuthMethod(for: host)
+            let client = try await SSHClient.connect(
                 host: host.hostname,
                 port: host.port,
-                authenticationMethod: authMethod,
+                authenticationMethod: auth,
                 hostKeyValidator: .acceptAnything(),
                 reconnect: .never
             )
-            self.client = sshClient
-            state = .connected
+            self.client = client
+            state = .ready
         } catch {
-            logger.error("SSH exec-only connect failed: \(error)")
-            await MainActor.run {
-                self.state = .failed(error.localizedDescription)
-            }
+            logger.error("connect failed: \(String(describing: error))")
+            state = .failed(error.localizedDescription)
         }
     }
 
-    /// Run a non-interactive command on the connected host and return its
-    /// combined stdout. Throws if no client is connected or the command fails.
-    /// Designed for short cmux CLI calls — not for streaming output.
+    /// Compatibility name kept while older call sites migrate.
+    func connectExecOnly(host: Host) async { await connect(to: host) }
+
+    /// Run a one-shot command on the remote host and return the captured
+    /// stdout. Designed for cmux CLI calls that return quickly; not for
+    /// streaming.
     func exec(_ command: String) async throws -> String {
-        guard let client else { throw SSHError.notConnected }
+        guard let client else { throw Failure.notReady }
         let buffer = try await client.executeCommand(command)
         return buffer.getString(at: buffer.readerIndex, length: buffer.readableBytes) ?? ""
     }
 
+    /// Close the underlying SSH session. Safe to call multiple times.
     func disconnect() {
-        connectionTask?.cancel()
-        connectionTask = nil
-        Task {
-            try? await client?.close()
-            client = nil
-        }
-        state = .disconnected
+        let snapshot = client
+        client = nil
+        state = .idle
+        Task { try? await snapshot?.close() }
     }
+
+    // MARK: - auth
 
     private func buildAuthMethod(for host: Host) throws -> SSHAuthenticationMethod {
-        if host.privateKeyRef.isEmpty {
-            throw SSHError.noKey
-        }
+        guard !host.privateKeyRef.isEmpty else { throw Failure.noKeyConfigured }
+        let blob = try loadKeyBytes(for: host)
+        guard let pem = String(data: blob, encoding: .utf8) else { throw Failure.keyNotUTF8 }
 
-        // Try Keychain first, fall back to dev key file in Documents
-        let keyData: Data
-        do {
-            keyData = try KeychainManager.load(key: host.privateKeyRef)
-        } catch {
-            // Dev fallback: check for key file in app Documents
-            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            let devKeyURL = docs.appendingPathComponent("dev-ssh-key")
-            guard FileManager.default.fileExists(atPath: devKeyURL.path) else {
-                throw SSHError.noKey
-            }
-            keyData = try Data(contentsOf: devKeyURL)
+        switch SSHKeyFormat.detect(in: pem) {
+        case .opensshEd25519:
+            let seed = try OpenSSHEd25519Parser.parseSeed(pem: pem)
+            let key = try Curve25519.Signing.PrivateKey(rawRepresentation: seed)
+            return .ed25519(username: host.username, privateKey: key)
+        case .rsa:
+            let key = try Insecure.RSA.PrivateKey(sshRsa: pem)
+            return .rsa(username: host.username, privateKey: key)
+        case .unknown:
+            throw Failure.unsupportedKeyFormat
         }
-
-        guard let keyString = String(data: keyData, encoding: .utf8) else {
-            throw SSHError.invalidKey
-        }
-
-        // Try to parse as ed25519 OpenSSH key
-        if keyString.contains("OPENSSH") {
-            let rawKey = try parseOpenSSHEd25519(keyString)
-            let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: rawKey)
-            return .ed25519(username: host.username, privateKey: privateKey)
-        }
-
-        // Fall back to RSA
-        let privateKey = try Insecure.RSA.PrivateKey(sshRsa: keyString)
-        return .rsa(username: host.username, privateKey: privateKey)
     }
 
-    private func parseOpenSSHEd25519(_ pemString: String) throws -> Data {
-        // OpenSSH private key format for ed25519:
-        // Strip header/footer, base64 decode, then extract the 32-byte private key
-        let lines = pemString.components(separatedBy: "\n")
-            .filter { !$0.hasPrefix("-----") && !$0.isEmpty }
-        let base64String = lines.joined()
-        guard let decoded = Data(base64Encoded: base64String) else {
-            throw SSHError.invalidKey
+    private func loadKeyBytes(for host: Host) throws -> Data {
+        if KeychainStore.contains(host.privateKeyRef) {
+            return try KeychainStore.load(host.privateKeyRef)
         }
-
-        // OpenSSH format: magic, ciphername, kdfname, kdfoptions, number of keys,
-        // public key, private key section
-        // For unencrypted ed25519, the private key (seed) is 32 bytes
-        // located after the public key in the private section
-        // The private section contains: checkint, checkint, keytype, pubkey(32), privkey(64), comment
-        // The privkey(64) = seed(32) + pubkey(32)
-
-        let magic = "openssh-key-v1\0"
-        guard decoded.count > magic.utf8.count,
-              String(data: decoded.prefix(magic.utf8.count), encoding: .utf8) == magic else {
-            throw SSHError.invalidKey
+        // Developer escape hatch: a plain file at Documents/dev-ssh-key so a
+        // dev build can load a key without going through the Keychain UI.
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let devFile = docs.appendingPathComponent("dev-ssh-key")
+        if FileManager.default.fileExists(atPath: devFile.path) {
+            return try Data(contentsOf: devFile)
         }
-
-        // Find the ed25519 private key seed (32 bytes) in the decoded data
-        // Search for the key type string "ssh-ed25519" in the private section
-        // The seed follows: keytype_len(4) + keytype + pubkey_len(4) + pubkey(32) + privkey_len(4) + privkey(64)
-        // We want bytes 0-31 of the 64-byte privkey (that's the seed)
-
-        // Simpler approach: scan for the second occurrence of "ssh-ed25519" (in private section)
-        let keyTypeBytes: [UInt8] = Array("ssh-ed25519".utf8)
-        let bytes = Array(decoded)
-        var positions: [Int] = []
-        for i in 0..<(bytes.count - keyTypeBytes.count) {
-            if Array(bytes[i..<(i + keyTypeBytes.count)]) == keyTypeBytes {
-                positions.append(i)
-            }
-        }
-
-        guard positions.count >= 2 else {
-            throw SSHError.invalidKey
-        }
-
-        // Second occurrence is in the private section
-        let privSectionKeyTypeStart = positions[1]
-        // From the raw string start: "ssh-ed25519"(11 bytes)
-        // Then 4 bytes pubkey length + 32 bytes pubkey
-        // Then 4 bytes privkey length + 64 bytes privkey (first 32 = seed)
-        let offset = privSectionKeyTypeStart + keyTypeBytes.count + 4 + 32 + 4
-        guard offset + 32 <= bytes.count else {
-            throw SSHError.invalidKey
-        }
-
-        return Data(bytes[offset..<(offset + 32)])
+        throw Failure.noKeyConfigured
     }
 }
 
-enum SSHError: LocalizedError {
-    case noKey
-    case invalidKey
-    case notConnected
+// MARK: - errors
 
-    var errorDescription: String? {
-        switch self {
-        case .noKey: "No SSH key configured for this host"
-        case .invalidKey: "Could not parse SSH private key"
-        case .notConnected: "SSH client is not connected"
+extension SSHConnectionManager {
+    enum Failure: LocalizedError {
+        case noKeyConfigured
+        case keyNotUTF8
+        case unsupportedKeyFormat
+        case notReady
+
+        var errorDescription: String? {
+            switch self {
+            case .noKeyConfigured:     "No SSH key set for this host"
+            case .keyNotUTF8:          "Stored key is not valid UTF-8"
+            case .unsupportedKeyFormat: "Key format not supported (need OpenSSH ed25519 or RSA)"
+            case .notReady:            "SSH session is not connected"
+            }
         }
+    }
+}
+
+// MARK: - key format detection
+
+/// What kind of PEM blob we're holding.
+enum SSHKeyFormat {
+    case opensshEd25519
+    case rsa
+    case unknown
+
+    /// Heuristic based on the BEGIN line of the PEM blob.
+    static func detect(in pem: String) -> SSHKeyFormat {
+        if pem.contains("BEGIN OPENSSH PRIVATE KEY") { return .opensshEd25519 }
+        if pem.contains("BEGIN RSA PRIVATE KEY")     { return .rsa }
+        return .unknown
+    }
+}
+
+// MARK: - OpenSSH ed25519 seed extractor
+
+/// Pulls the 32-byte ed25519 seed out of an unencrypted OpenSSH-format
+/// private key blob.
+///
+/// OpenSSH key format reference:
+/// https://github.com/openssh/openssh-portable/blob/master/PROTOCOL.key
+///
+/// Wire layout (everything length-prefixed by big-endian uint32):
+///   magic            = "openssh-key-v1\0"
+///   ciphername       = "none"  (we require unencrypted keys)
+///   kdfname          = "none"
+///   kdfoptions       = "" (empty string)
+///   numkeys          = 1
+///   public-key-blob
+///   private-key-blob:
+///       checkint1        (uint32)
+///       checkint2        (uint32, equal to checkint1)
+///       keytype          = "ssh-ed25519"
+///       public-key-bytes (32 bytes, length-prefixed)
+///       private-key-bytes (64 bytes, length-prefixed; first 32 = seed)
+///       comment
+///       padding to 8-byte alignment
+enum OpenSSHEd25519Parser {
+
+    enum ParseError: LocalizedError {
+        case base64Decode
+        case missingMagic
+        case truncated
+        case encryptedKey
+        case notEd25519
+
+        var errorDescription: String? {
+            switch self {
+            case .base64Decode: "Could not base64-decode the OpenSSH blob"
+            case .missingMagic: "Blob does not start with the OpenSSH magic header"
+            case .truncated:    "OpenSSH blob ended before expected data"
+            case .encryptedKey: "Encrypted OpenSSH keys are not supported — re-export without a passphrase"
+            case .notEd25519:   "Inner key type is not ssh-ed25519"
+            }
+        }
+    }
+
+    /// Returns the 32-byte seed suitable for `Curve25519.Signing.PrivateKey`.
+    static func parseSeed(pem: String) throws -> Data {
+        let bytes = try base64Body(of: pem)
+        var reader = ByteReader(bytes)
+
+        try reader.expect("openssh-key-v1\0".data(using: .utf8)!) ?? { throw ParseError.missingMagic }()
+
+        let cipher = try reader.lengthPrefixedString()
+        let kdf    = try reader.lengthPrefixedString()
+        _ = try reader.lengthPrefixedString() // kdfoptions
+        guard cipher == "none", kdf == "none" else { throw ParseError.encryptedKey }
+
+        guard try reader.uint32() == 1 else { throw ParseError.truncated } // numkeys
+        _ = try reader.lengthPrefixedBytes() // public-key blob (skipped)
+        let priv = try reader.lengthPrefixedBytes()
+
+        var inner = ByteReader(Array(priv))
+        _ = try inner.uint32() // checkint1
+        _ = try inner.uint32() // checkint2 (assumed equal)
+
+        let keyType = try inner.lengthPrefixedString()
+        guard keyType == "ssh-ed25519" else { throw ParseError.notEd25519 }
+
+        _ = try inner.lengthPrefixedBytes() // inner-pub (32 bytes)
+        let privBlob = try inner.lengthPrefixedBytes() // 64 bytes
+        guard privBlob.count >= 32 else { throw ParseError.truncated }
+
+        return Data(privBlob.prefix(32))
+    }
+
+    /// Strip PEM header/footer, base64-decode the body.
+    private static func base64Body(of pem: String) throws -> [UInt8] {
+        let body = pem
+            .split(whereSeparator: \.isNewline)
+            .filter { !$0.hasPrefix("-----") }
+            .joined()
+        guard let data = Data(base64Encoded: body) else { throw ParseError.base64Decode }
+        return Array(data)
+    }
+}
+
+// MARK: - byte cursor helper
+
+/// Forward-only reader over a byte array. Throws `truncated` when callers
+/// ask for more than what's left.
+private struct ByteReader {
+    private let bytes: [UInt8]
+    private var index: Int = 0
+
+    init(_ bytes: [UInt8]) { self.bytes = bytes }
+
+    mutating func uint32() throws -> UInt32 {
+        guard index + 4 <= bytes.count else { throw OpenSSHEd25519Parser.ParseError.truncated }
+        let v: UInt32 =
+            (UInt32(bytes[index    ]) << 24) |
+            (UInt32(bytes[index + 1]) << 16) |
+            (UInt32(bytes[index + 2]) <<  8) |
+             UInt32(bytes[index + 3])
+        index += 4
+        return v
+    }
+
+    mutating func lengthPrefixedBytes() throws -> [UInt8] {
+        let n = Int(try uint32())
+        guard index + n <= bytes.count else { throw OpenSSHEd25519Parser.ParseError.truncated }
+        let slice = Array(bytes[index ..< (index + n)])
+        index += n
+        return slice
+    }
+
+    mutating func lengthPrefixedString() throws -> String {
+        let raw = try lengthPrefixedBytes()
+        return String(decoding: raw, as: UTF8.self)
+    }
+
+    /// Read `prefix.count` bytes and assert equality. Returns nil on match,
+    /// throws on truncation — caller wraps the nil into a typed error.
+    mutating func expect(_ prefix: Data) throws -> Void? {
+        guard index + prefix.count <= bytes.count else {
+            throw OpenSSHEd25519Parser.ParseError.truncated
+        }
+        for (i, byte) in prefix.enumerated() where bytes[index + i] != byte {
+            return Void?.some(())  // mismatch — signal via non-nil so caller's `?? { throw }` fires
+        }
+        index += prefix.count
+        return nil  // matched
     }
 }

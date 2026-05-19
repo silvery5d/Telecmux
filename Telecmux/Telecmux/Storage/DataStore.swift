@@ -1,194 +1,263 @@
 import Foundation
+import os
 
+private let logger = Logger(subsystem: "com.diwu.telecmux", category: "DataStore")
+
+/// Persists the user's Host + Session list as a single JSON file.
+///
+/// Storage is chosen at construction:
+/// - If the iCloud Drive ubiquity container is reachable, the file lives
+///   there (`telecmux-data.json` inside `Documents/`) and is mirrored across
+///   the user's devices.
+/// - Otherwise (no iCloud account, simulator, container unavailable), it
+///   falls back to the app's local Documents directory.
+///
+/// Concurrency model: this is a `@MainActor` `@Observable` so views can read
+/// `hosts` / `sessions` directly. All file I/O happens through
+/// `NSFileCoordinator` so iCloud writes don't race other devices.
+@MainActor
 @Observable
 final class DataStore {
     var hosts: [Host] = []
     var sessions: [Session] = []
-    var iCloudAvailable: Bool { iCloudURL != nil }
 
-    private let localFileURL: URL
-    private let iCloudURL: URL?
-    private var metadataQuery: NSMetadataQuery?
+    /// Where this store's data file lives.
+    let storage: Storage
+    /// True iff iCloud chose itself at boot. Surfaced for the Settings panel.
+    var iCloudAvailable: Bool { storage.isCloud }
 
-    private var fileURL: URL {
-        iCloudURL ?? localFileURL
-    }
+    private var cloudWatcher: NSMetadataQuery?
+    private var cloudObserver: NSObjectProtocol?
 
     init() {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        self.localFileURL = docs.appendingPathComponent("telecmux-data.json")
+        storage = Storage.resolve()
+        bootstrap()
+    }
 
-        // Never use iCloud in the simulator — prevents clobbering production data
-        #if !targetEnvironment(simulator)
-        if let containerURL = FileManager.default.url(forUbiquityContainerIdentifier: "iCloud.com.diwu.telecmux") {
-            let iCloudDocsURL = containerURL.appendingPathComponent("Documents")
-            try? FileManager.default.createDirectory(at: iCloudDocsURL, withIntermediateDirectories: true)
-            self.iCloudURL = iCloudDocsURL.appendingPathComponent("telecmux-data.json")
-        } else {
-            self.iCloudURL = nil
-        }
-        #else
-        self.iCloudURL = nil
-        #endif
+    // No explicit deinit: this store is held by the app's @State for the
+    // entire process lifetime, so the cloud watcher and observer naturally
+    // outlive the only reference. Swift 6's strict actor isolation also
+    // disallows touching MainActor-bound properties from a nonisolated
+    // deinit, so there's no clean cleanup path here anyway.
 
-        migrateLocalToiCloudIfNeeded()
+    // MARK: - lifecycle
+
+    /// One-shot boot sequence. Public so tests can re-run if needed.
+    private func bootstrap() {
+        promoteLegacyLocalFileIntoCloud()
         load()
-        createFileIfNeeded()
-        startWatchingForChanges()
+        seedFileIfMissing()
+        startWatchingCloud()
     }
 
-    deinit {
-        metadataQuery?.stop()
-    }
-
-    // MARK: - Persistence
-
-    func load() {
-        let url = fileURL
-
-        // If iCloud file isn't downloaded yet, trigger download and wait for the
-        // metadata query to notify us when it arrives — do NOT create an empty file
-        if let iCloudURL, !FileManager.default.fileExists(atPath: iCloudURL.path) {
-            try? FileManager.default.startDownloadingUbiquitousItem(at: iCloudURL)
-            return
-        }
-
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-        do {
-            var data: Data?
-            var readError: NSError?
-            let coordinator = NSFileCoordinator()
-            coordinator.coordinate(readingItemAt: url, options: [], error: &readError) { coordURL in
-                data = try? Data(contentsOf: coordURL)
-            }
-            if let readError { throw readError }
-            guard let data else { return }
-
-            let backup = try JSONDecoder.telecmux.decode(BackupData.self, from: data)
-            self.hosts = backup.hosts.map { migrateHost($0) }
-            self.sessions = backup.sessions
-        } catch {
-            print("Failed to load data: \(error)")
-        }
-    }
-
-    func save() {
-        // Never overwrite iCloud with empty data — protects against saving before
-        // the iCloud file has downloaded
-        if iCloudURL != nil && hosts.isEmpty && sessions.isEmpty {
-            print("Refusing to save empty data to iCloud")
-            return
-        }
-
-        do {
-            let backup = BackupData(
-                version: 1,
-                exportedAt: Date(),
-                hosts: hosts,
-                sessions: sessions
-            )
-            let data = try JSONEncoder.telecmux.encode(backup)
-            let url = fileURL
-
-            var writeError: NSError?
-            let coordinator = NSFileCoordinator()
-            coordinator.coordinate(writingItemAt: url, options: .forReplacing, error: &writeError) { coordURL in
-                try? data.write(to: coordURL, options: .atomic)
-            }
-            if let writeError {
-                print("Failed to save data: \(writeError)")
-            }
-        } catch {
-            print("Failed to save data: \(error)")
-        }
-    }
-
-    // MARK: - Host CRUD
+    // MARK: - host CRUD
 
     func addHost(_ host: Host) {
         hosts.append(host)
-        save()
+        commit()
     }
 
     func deleteHost(_ host: Host) {
+        // Cascading delete: any session bound to this host goes too.
         sessions.removeAll { $0.hostID == host.id }
         hosts.removeAll { $0.id == host.id }
-        save()
+        commit()
     }
 
     func host(for session: Session) -> Host? {
-        hosts.first { $0.id == session.hostID }
+        hosts.first(where: { $0.id == session.hostID })
     }
 
-    // MARK: - Session CRUD
+    // MARK: - session CRUD
 
     func addSession(_ session: Session) {
         sessions.append(session)
-        save()
+        commit()
     }
 
     func deleteSession(_ session: Session) {
-        sessions.removeAll { $0.id == session.id }
-        save()
+        sessions.removeAll(where: { $0.id == session.id })
+        commit()
     }
 
     func sessions(for host: Host) -> [Session] {
         sessions.filter { $0.hostID == host.id }
     }
 
-    private func migrateHost(_ host: Host) -> Host {
-        // No-op for now — kept as a hook for future schema upgrades.
-        host
-    }
+    // MARK: - persistence
 
-    private func createFileIfNeeded() {
-        // Only create a seed file for local-only storage (no iCloud).
-        // When iCloud is available, we wait for the download instead.
-        guard iCloudURL == nil else { return }
-        if !FileManager.default.fileExists(atPath: localFileURL.path) {
-            save()
+    /// Read from disk (or iCloud), replacing in-memory state.
+    func load() {
+        let url = storage.url
+
+        // If iCloud hasn't downloaded the file yet, ask for it; the cloud
+        // watcher will retry once it arrives. Don't seed empty data on top
+        // of what might still be syncing.
+        if case .cloud(let cloudURL) = storage,
+           !FileManager.default.fileExists(atPath: cloudURL.path) {
+            try? FileManager.default.startDownloadingUbiquitousItem(at: cloudURL)
+            return
+        }
+
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+
+        var fileData: Data?
+        var coordErr: NSError?
+        NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordErr) { coord in
+            fileData = try? Data(contentsOf: coord)
+        }
+        if let coordErr {
+            logger.error("Read coordinator failed: \(coordErr.localizedDescription)")
+            return
+        }
+        guard let fileData else { return }
+
+        do {
+            let payload = try JSONDecoder.telecmux.decode(BackupData.self, from: fileData)
+            hosts = payload.hosts
+            sessions = payload.sessions
+        } catch {
+            logger.error("Decode of \(url.lastPathComponent) failed: \(error.localizedDescription)")
         }
     }
 
-    // MARK: - iCloud Sync
+    /// Encode current state and write it back.
+    func commit() {
+        // Protect against clobbering iCloud with an empty file when a device
+        // boots before the cloud copy finishes downloading.
+        if case .cloud = storage, hosts.isEmpty, sessions.isEmpty {
+            logger.warning("Refusing to write empty state to cloud")
+            return
+        }
 
-    private func migrateLocalToiCloudIfNeeded() {
-        guard let iCloudURL else { return }
+        let payload = BackupData(version: BackupData.currentVersion,
+                                 exportedAt: Date(),
+                                 hosts: hosts,
+                                 sessions: sessions)
+        let encoded: Data
+        do {
+            encoded = try JSONEncoder.telecmux.encode(payload)
+        } catch {
+            logger.error("Encode failed: \(error.localizedDescription)")
+            return
+        }
 
-        // If local file exists but iCloud file doesn't, migrate
-        if FileManager.default.fileExists(atPath: localFileURL.path),
-           !FileManager.default.fileExists(atPath: iCloudURL.path) {
+        var coordErr: NSError?
+        NSFileCoordinator().coordinate(writingItemAt: storage.url,
+                                       options: .forReplacing,
+                                       error: &coordErr) { coord in
             do {
-                let data = try Data(contentsOf: localFileURL)
-                try data.write(to: iCloudURL, options: .atomic)
-                try FileManager.default.removeItem(at: localFileURL)
+                try encoded.write(to: coord, options: .atomic)
             } catch {
-                print("Failed to migrate to iCloud: \(error)")
+                logger.error("Write failed: \(error.localizedDescription)")
             }
         }
+        if let coordErr {
+            logger.error("Write coordinator failed: \(coordErr.localizedDescription)")
+        }
     }
 
-    private func startWatchingForChanges() {
-        guard iCloudURL != nil else { return }
+    // MARK: - one-time migrations
 
+    /// If a prior local-only install left a file behind and we just got an
+    /// iCloud container, move it up so the user doesn't see two stores.
+    private func promoteLegacyLocalFileIntoCloud() {
+        guard case .cloud(let cloudURL) = storage else { return }
+        let localURL = Storage.localFallbackURL()
+        guard FileManager.default.fileExists(atPath: localURL.path),
+              !FileManager.default.fileExists(atPath: cloudURL.path) else { return }
+        do {
+            let blob = try Data(contentsOf: localURL)
+            try blob.write(to: cloudURL, options: .atomic)
+            try? FileManager.default.removeItem(at: localURL)
+            logger.info("Promoted local store into iCloud")
+        } catch {
+            logger.error("Promotion failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func seedFileIfMissing() {
+        // Only seed when there's no iCloud — when there is, we wait for the
+        // download instead of racing it.
+        guard case .local(let url) = storage,
+              !FileManager.default.fileExists(atPath: url.path) else { return }
+        commit()
+    }
+
+    // MARK: - cloud change watcher
+
+    private func startWatchingCloud() {
+        guard case .cloud = storage else { return }
         let query = NSMetadataQuery()
         query.searchScopes = [NSMetadataQueryUbiquitousDocumentsScope]
-        query.predicate = NSPredicate(format: "%K == %@", NSMetadataItemFSNameKey, "telecmux-data.json")
+        query.predicate = NSPredicate(format: "%K == %@", NSMetadataItemFSNameKey, Storage.fileName)
 
-        NotificationCenter.default.addObserver(
+        cloudObserver = NotificationCenter.default.addObserver(
             forName: .NSMetadataQueryDidUpdate,
             object: query,
             queue: .main
         ) { [weak self] _ in
-            self?.load()
+            // Hop to the actor since this closure runs on the main queue but
+            // not yet @MainActor-bound under Swift 6 concurrency rules.
+            Task { @MainActor in self?.load() }
         }
-
         query.start()
-        metadataQuery = query
+        cloudWatcher = query
     }
 }
 
+// MARK: - storage strategy
+
+extension DataStore {
+    /// Where the JSON lives. Picked once at boot.
+    enum Storage {
+        case cloud(URL)
+        case local(URL)
+
+        static let fileName = "telecmux-data.json"
+        static let containerID = "iCloud.com.diwu.telecmux"
+
+        var url: URL {
+            switch self {
+            case .cloud(let u): u
+            case .local(let u): u
+            }
+        }
+
+        var isCloud: Bool {
+            if case .cloud = self { true } else { false }
+        }
+
+        /// Local-only file URL inside the app's Documents folder.
+        static func localFallbackURL() -> URL {
+            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            return docs.appendingPathComponent(fileName)
+        }
+
+        /// Picks cloud when available, local otherwise. Never attempts cloud
+        /// on the simulator — we don't want test devices stomping production.
+        static func resolve() -> Storage {
+            let local = localFallbackURL()
+            #if targetEnvironment(simulator)
+            return .local(local)
+            #else
+            guard let container = FileManager.default.url(forUbiquityContainerIdentifier: containerID)
+            else { return .local(local) }
+            let docs = container.appendingPathComponent("Documents")
+            try? FileManager.default.createDirectory(at: docs, withIntermediateDirectories: true)
+            return .cloud(docs.appendingPathComponent(fileName))
+            #endif
+        }
+    }
+}
+
+// MARK: - backup payload + Coders
+
+/// The on-disk shape of the persisted store. Versioned so future migrations
+/// can read older blobs.
 struct BackupData: Codable {
+    static let currentVersion = 1
+
     var version: Int
     var exportedAt: Date
     var hosts: [Host]
@@ -196,18 +265,20 @@ struct BackupData: Codable {
 }
 
 extension JSONEncoder {
+    /// Encoder with stable, diff-friendly output (sorted keys + ISO 8601).
     static let telecmux: JSONEncoder = {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        return encoder
+        let e = JSONEncoder()
+        e.dateEncodingStrategy = .iso8601
+        e.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return e
     }()
 }
 
 extension JSONDecoder {
+    /// Matching decoder.
     static let telecmux: JSONDecoder = {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return decoder
+        let d = JSONDecoder()
+        d.dateDecodingStrategy = .iso8601
+        return d
     }()
 }

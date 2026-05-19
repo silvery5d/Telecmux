@@ -1,34 +1,46 @@
 import Foundation
-import UIKit
 
+/// State holder + dispatcher for the mic ribbon button.
+///
+/// Two responsibilities:
+/// 1. When the user taps the mic, decide whether to hand off to an external
+///    transcription app (Super Whisper) or open an empty text-input modal.
+/// 2. When the external app calls back into the app via the
+///    `telecmux://voice-callback?text=...` URL, surface the transcript and
+///    open the modal so the user can review + send.
+///
+/// Views observe `isModalPresented` and `transcribedText`.
 @Observable
 final class VoiceInputCoordinator {
-    var isShowingVoiceModal = false
-    var transcribedText = ""
+    /// `true` once the modal should be presented. Views flip this back to
+    /// `false` after they consume the value.
+    var isShowingVoiceModal: Bool = false
+    /// Text to seed the modal's TextEditor with. Empty for manual entry.
+    var transcribedText: String = ""
 
+    /// Called from ribbon button. `settings` decides the transport.
     func handleVoiceButton(settings: AppSettings) {
-        switch settings.voiceProvider {
-        case .superWhisper:
-            if SuperWhisperProvider.isAvailable {
-                SuperWhisperProvider.openForTranscription()
-                return
-            }
-            // Fall through to empty modal if Super Whisper not installed
-            fallthrough
-        case .none:
-            transcribedText = ""
-            isShowingVoiceModal = true
+        if settings.voiceProvider == .superWhisper, SuperWhisperProvider.isAvailable {
+            SuperWhisperProvider.openForTranscription()
+            return
         }
+        // Either provider == .none, or Super Whisper not installed.
+        present(prefill: "")
     }
 
+    /// Called from `App.onOpenURL` when an external app sends us a transcript.
     func handleCallbackURL(_ url: URL) {
         guard url.scheme == "telecmux",
               url.host == "voice-callback",
-              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let text = components.queryItems?.first(where: { $0.name == "text" })?.value else {
-            return
-        }
-        transcribedText = text
+              let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let item = comps.queryItems?.first(where: { $0.name == "text" }),
+              let value = item.value
+        else { return }
+        present(prefill: value)
+    }
+
+    private func present(prefill: String) {
+        transcribedText = prefill
         isShowingVoiceModal = true
     }
 }
