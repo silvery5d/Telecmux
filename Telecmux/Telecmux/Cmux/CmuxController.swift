@@ -49,6 +49,14 @@ final class CmuxController {
 
     /// Verify cmux is installed and its socket responds. Updates `state`.
     func probe() async {
+        // If SSH itself never came up, surface that specific error instead of
+        // the generic "SSH session is not connected" exec-time failure — the
+        // real root cause is usually the auth / network problem captured here.
+        if case .failed(let sshError) = ssh.state {
+            logger.error("probe sees ssh.state=.failed: \(sshError)")
+            state = .unreachable("SSH: \(sshError)")
+            return
+        }
         do {
             _ = try await ssh.exec(CmuxCommand.ping)
             state = .ready

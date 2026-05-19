@@ -29,11 +29,12 @@ enum KeychainStore {
 
     @discardableResult
     static func store(_ bytes: Data, as account: String) throws -> String {
-        var query = baseQuery(account: account)
-        // Idempotent: clear before write so the same account always replaces.
-        SecItemDelete(query as CFDictionary)
-        query[kSecValueData as String] = bytes
-        let status = SecItemAdd(query as CFDictionary, nil)
+        // Idempotent: clear any existing entry first so writes always replace.
+        SecItemDelete(baseQuery(account: account) as CFDictionary)
+        var addQuery = baseQuery(account: account)
+        addQuery[kSecValueData as String] = bytes
+        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        let status = SecItemAdd(addQuery as CFDictionary, nil)
         guard status == errSecSuccess else { throw Failure.write(status) }
         return account
     }
@@ -66,12 +67,15 @@ enum KeychainStore {
         return SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
     }
 
+    /// Query that matches by (service, account) only. Accessibility is set
+    /// on write, not in the lookup — putting it here would silently miss
+    /// entries written under a different `kSecAttrAccessible` value (e.g.
+    /// the SDK default `WhenUnlocked`).
     private static func baseQuery(account: String) -> [String: Any] {
         [
             kSecClass as String:       kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
     }
 }

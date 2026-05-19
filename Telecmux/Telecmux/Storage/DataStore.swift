@@ -123,10 +123,15 @@ final class DataStore {
 
     /// Encode current state and write it back.
     func commit() {
-        // Protect against clobbering iCloud with an empty file when a device
-        // boots before the cloud copy finishes downloading.
-        if case .cloud = storage, hosts.isEmpty, sessions.isEmpty {
-            logger.warning("Refusing to write empty state to cloud")
+        // Refuse to clobber a non-empty file on disk with an empty in-memory
+        // state. This catches two failure modes:
+        //   1. Boot races where iCloud hasn't downloaded yet
+        //   2. A load() error that left hosts/sessions empty while the
+        //      backing file still has data — without this check, the next
+        //      mutation would silently overwrite the file with zero rows.
+        if hosts.isEmpty, sessions.isEmpty,
+           FileManager.default.fileExists(atPath: storage.url.path) {
+            logger.warning("Refusing to write empty state on top of existing file")
             return
         }
 
@@ -160,7 +165,10 @@ final class DataStore {
     // MARK: - one-time migrations
 
     /// If a prior local-only install left a file behind and we just got an
-    /// iCloud container, move it up so the user doesn't see two stores.
+    /// iCloud container, copy it up so the user sees the same data on every
+    /// device. Local file is kept as a safety net — losing iCloud access
+    /// later (account signed out, container removed) must not vaporize the
+    /// only copy.
     private func promoteLegacyLocalFileIntoCloud() {
         guard case .cloud(let cloudURL) = storage else { return }
         let localURL = Storage.localFallbackURL()
@@ -169,8 +177,7 @@ final class DataStore {
         do {
             let blob = try Data(contentsOf: localURL)
             try blob.write(to: cloudURL, options: .atomic)
-            try? FileManager.default.removeItem(at: localURL)
-            logger.info("Promoted local store into iCloud")
+            logger.info("Copied local store into iCloud (local retained as backup)")
         } catch {
             logger.error("Promotion failed: \(error.localizedDescription)")
         }

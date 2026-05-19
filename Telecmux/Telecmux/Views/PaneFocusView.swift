@@ -41,21 +41,28 @@ struct PaneFocusView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            if let res = controller?.lastActionResult {
-                actionToast(res)
+        // Outer GeometryReader pins the VStack to the container's actual
+        // width, so a misbehaving child (e.g. ScrollView whose contentSize
+        // exceeds the screen) can't push the whole layout into overflow.
+        GeometryReader { geo in
+            VStack(spacing: 0) {
+                if let res = controller?.lastActionResult {
+                    actionToast(res)
+                }
+                if let ref = surfaceRef {
+                    Text("→ \(ref)")
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                screenView
+                inputBar
+                ribbonBar
             }
-            if let ref = surfaceRef {
-                Text("→ \(ref)")
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            screenView
-            inputBar
-            ribbonBar
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
+            .clipped()
         }
         .navigationTitle(paneTitle)
         .navigationBarTitleDisplayMode(.inline)
@@ -118,11 +125,14 @@ struct PaneFocusView: View {
     private var screenView: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                Text(CmuxScreenHighlighter.highlight(controller?.screen ?? ""))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
-                    .id("bottom")
-                    .textSelection(.enabled)
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(CmuxScreenHighlighter.lines(controller?.screen ?? "")) { line in
+                        render(line)
+                    }
+                    Color.clear.frame(height: 1).id("bottom")
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 8)
             }
             .background(Color.black)
             .onChange(of: controller?.lastScreenUpdate) { _, _ in
@@ -130,6 +140,85 @@ struct PaneFocusView: View {
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
             }
+        }
+    }
+
+    /// Renders one classified line. Divider → a thin Rectangle (so a
+    /// terminal-wide horizontal line shows as one row on the phone, not as
+    /// 3-4 wrapped rows of ─ glyphs). Diff lines get a tinted background.
+    /// Everything else is plain monospaced Text with the line's color.
+    @ViewBuilder
+    private func render(_ line: CmuxScreenHighlighter.Line) -> some View {
+        let mono = Font.system(.footnote, design: .monospaced)
+        switch line.kind {
+        case .divider:
+            Rectangle()
+                .fill(Color.gray.opacity(0.45))
+                .frame(height: 1)
+                .padding(.vertical, 3)
+
+        case .codeFence:
+            Text(verbatim: line.text)
+                .font(mono)
+                .foregroundColor(Color(white: 0.5))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+
+        case .diffAdded:
+            Text(verbatim: line.text)
+                .font(mono)
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 4)
+                .background(Color.blue.opacity(0.22))
+                .textSelection(.enabled)
+
+        case .diffRemoved:
+            Text(verbatim: line.text)
+                .font(mono)
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 4)
+                .background(Color.red.opacity(0.22))
+                .textSelection(.enabled)
+
+        case .codeBody:
+            Text(verbatim: line.text)
+                .font(mono)
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+
+        case .modeIndicator(let color):
+            Text(verbatim: line.text)
+                .font(mono.bold())
+                .foregroundColor(color)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+
+        case .status:
+            Text(verbatim: line.text)
+                .font(mono)
+                .foregroundColor(.gray)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+
+        case .userInput:
+            // Reverse video — terminal convention for highlighted text.
+            Text(verbatim: line.text)
+                .font(mono)
+                .foregroundColor(.black)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 4)
+                .background(CmuxScreenHighlighter.defaultColor)
+                .textSelection(.enabled)
+
+        case .normal(let color):
+            Text(verbatim: line.text.isEmpty ? " " : line.text)
+                .font(mono)
+                .foregroundColor(color)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
         }
     }
 
@@ -168,7 +257,10 @@ struct PaneFocusView: View {
     }
 
     private var ribbonBar: some View {
-        HStack(spacing: 12) {
+        // Buttons share the available width equally instead of each one
+        // demanding a fixed minWidth — that combination overflows the
+        // screen once the ribbon has 6+ items.
+        HStack(spacing: 6) {
             ForEach(activeRibbon.buttons) { button in
                 Button {
                     handle(button)
@@ -183,13 +275,13 @@ struct PaneFocusView: View {
                                 .font(.body)
                         }
                     }
-                    .frame(minWidth: 44, minHeight: 44)
+                    .frame(maxWidth: .infinity, minHeight: 44)
                 }
                 .buttonStyle(.bordered)
                 .buttonBorderShape(.roundedRectangle)
             }
         }
-        .padding(.horizontal)
+        .padding(.horizontal, 8)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity)
         .background(.regularMaterial)

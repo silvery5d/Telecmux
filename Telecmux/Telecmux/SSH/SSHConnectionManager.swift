@@ -195,7 +195,7 @@ enum OpenSSHEd25519Parser {
         let bytes = try base64Body(of: pem)
         var reader = ByteReader(bytes)
 
-        try reader.expect("openssh-key-v1\0".data(using: .utf8)!) ?? { throw ParseError.missingMagic }()
+        try reader.expectMagic("openssh-key-v1\0".data(using: .utf8)!)
 
         let cipher = try reader.lengthPrefixedString()
         let kdf    = try reader.lengthPrefixedString()
@@ -265,16 +265,16 @@ private struct ByteReader {
         return String(decoding: raw, as: UTF8.self)
     }
 
-    /// Read `prefix.count` bytes and assert equality. Returns nil on match,
-    /// throws on truncation — caller wraps the nil into a typed error.
-    mutating func expect(_ prefix: Data) throws -> Void? {
-        guard index + prefix.count <= bytes.count else {
+    /// Advance past `magic` if the bytes at the cursor match. Throws
+    /// `missingMagic` on mismatch and `truncated` if there aren't enough
+    /// bytes left to compare.
+    mutating func expectMagic(_ magic: Data) throws {
+        guard index + magic.count <= bytes.count else {
             throw OpenSSHEd25519Parser.ParseError.truncated
         }
-        for (i, byte) in prefix.enumerated() where bytes[index + i] != byte {
-            return Void?.some(())  // mismatch — signal via non-nil so caller's `?? { throw }` fires
+        for (i, byte) in magic.enumerated() where bytes[index + i] != byte {
+            throw OpenSSHEd25519Parser.ParseError.missingMagic
         }
-        index += prefix.count
-        return nil  // matched
+        index += magic.count
     }
 }
