@@ -64,8 +64,27 @@ xcodebuild -project Telecmux.xcodeproj -scheme Telecmux \
   build
 ```
 
-## Credits
+## Voice input
 
-- [cmux](https://github.com/manaflow-ai/cmux) by manaflow — the terminal Telecmux is a remote for
+The mic ribbon button opens an in-app sheet that uses `SFSpeechRecognizer`
+for live, on-device transcription (no API calls, no API keys). Recognition
+language follows the device's current locale.
+
+## Credits & Inspiration
+
+Telecmux's ribbon soft-key UX and the Host/Session two-tier data model are
+inspired by **[gotoplanb/Hermit](https://github.com/gotoplanb/Hermit)** — an
+iOS SSH client built for the tmux + Claude Code workflow. Telecmux is not a
+fork; the codebase was written from scratch and the cmux integration,
+workspace board, surface-targeted commands, on-device live transcription,
+heuristic line classifier, and wrap-unwrapping logic are original work.
+
+If you live in tmux on a remote dev machine and aren't using cmux, Hermit
+is probably what you actually want.
+
+Built on:
+
+- [cmux](https://github.com/manaflow-ai/cmux) by manaflow — the terminal
+  Telecmux remotes
 - [Citadel](https://github.com/orlandos-nl/Citadel) — Swift SSH library
 - [SwiftNIO](https://github.com/apple/swift-nio) — networking foundation
