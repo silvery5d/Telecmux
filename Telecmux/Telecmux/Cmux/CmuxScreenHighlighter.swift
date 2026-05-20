@@ -55,11 +55,13 @@ enum CmuxScreenHighlighter {
         case normal(Color)
     }
 
-    static let defaultColor: Color = .green
+    /// Light gray — close to macOS Terminal's default foreground on a dark
+    /// background, which is what Claude Code itself draws on.
+    static let defaultColor: Color = Color(white: 0.92)
 
     // MARK: - entry point
 
-    static func lines(_ screen: String) -> [Line] {
+    static func lines(_ screen: String, paneColumns: Int = 80) -> [Line] {
         let rawLines = screen.split(separator: "\n", omittingEmptySubsequences: false)
         var result: [Line] = []
         var inCodeFence = false
@@ -72,14 +74,14 @@ enum CmuxScreenHighlighter {
             if isCodeFence(s) {
                 inCodeFence.toggle()
                 kind = .codeFence
+            } else if isDiffLine(s, op: "+") {
+                // Claude shows diffs as "  17 + content" — line number,
+                // space, +/-, space, code. Independent of code fences.
+                kind = .diffAdded
+            } else if isDiffLine(s, op: "-") {
+                kind = .diffRemoved
             } else if inCodeFence {
-                if s.hasPrefix("+") && !s.hasPrefix("++") {
-                    kind = .diffAdded
-                } else if s.hasPrefix("-") && !s.hasPrefix("--") {
-                    kind = .diffRemoved
-                } else {
-                    kind = .codeBody
-                }
+                kind = .codeBody
             } else if isDivider(s) {
                 // Collapse consecutive divider lines into a single rendered row.
                 if lastWasDivider { continue }
@@ -100,7 +102,88 @@ enum CmuxScreenHighlighter {
 
         // Second pass: promote "❯ ..." lines to `.userInput`, except the
         // active input-prompt sitting inside Claude's bottom input box.
-        return reclassifyUserInputs(result)
+        let withInputs = reclassifyUserInputs(result)
+        // Third pass: merge cmux-wrap continuations back into their
+        // originating logical line so SwiftUI Text can re-wrap them to
+        // iPhone width naturally.
+        return unwrapContinuations(withInputs, paneColumns: paneColumns)
+    }
+
+    /// Merge cmux-wrap continuations back into their logical line.
+    ///
+    /// When cmux wraps a long logical line onto multiple physical rows
+    /// (because the surface is only N columns wide), the lower rows lose
+    /// their prefix (line number, ❯, +/-). We can detect the continuation
+    /// using one of three signals and then **concatenate** the continuation
+    /// text back onto the previous row, dropping the prefix whitespace so
+    /// SwiftUI's own Text wrapping handles the iPhone width.
+    ///
+    /// Rule A — explicit op continuation: "  + ..." or "  - ..." (2+ leading
+    /// spaces, op, space) with previous row already a diff line.
+    ///
+    /// Rule B — indented continuation: current row starts with 2+ leading
+    /// spaces (no op needed) AND previous row is userInput/diff. Common
+    /// when cmux wraps `❯ long-command` onto a second line.
+    ///
+    /// Rule C — long-line wrap fallback: previous row reached ≥85% of
+    /// `paneColumns` AND was userInput/diff. Catches the case where cmux
+    /// strips trailing whitespace so we can't rely on exact width.
+    ///
+    /// Exception: menu markers like "❯ 1 Yes" never merge. The next ❯ row
+    /// is a separate option, not a wrap continuation.
+    private static func unwrapContinuations(_ lines: [Line], paneColumns: Int) -> [Line] {
+        let opPattern         = "^\\s{2,}[+\\-]\\s"
+        let indentedPattern   = "^\\s{2,}\\S"
+        let menuMarkerPattern = "^❯\\s+\\d"
+        let widthThreshold    = max(20, Int(Double(paneColumns) * 0.85))
+
+        var out: [Line] = []
+        for line in lines {
+            guard let prev = out.last else { out.append(line); continue }
+            guard case .normal = line.kind else { out.append(line); continue }
+
+            let curr = line.text
+            guard !curr.trimmingCharacters(in: .whitespaces).isEmpty else {
+                out.append(line); continue
+            }
+
+            // Don't merge into a menu marker — its next sibling is another option.
+            if case .userInput = prev.kind,
+               prev.text.trimmingCharacters(in: .whitespaces)
+                  .range(of: menuMarkerPattern, options: .regularExpression) != nil {
+                out.append(line); continue
+            }
+
+            let opMatch       = curr.range(of: opPattern,       options: .regularExpression)
+            let indentedMatch = curr.range(of: indentedPattern, options: .regularExpression)
+            let prevWide      = prev.text.count >= widthThreshold
+
+            // Rule A
+            if let m = opMatch,
+               case .diffAdded = prev.kind {
+                out[out.count - 1] = Line(text: prev.text + String(curr[m.upperBound...]),
+                                          kind: .diffAdded); continue
+            }
+            if let m = opMatch,
+               case .diffRemoved = prev.kind {
+                out[out.count - 1] = Line(text: prev.text + String(curr[m.upperBound...]),
+                                          kind: .diffRemoved); continue
+            }
+
+            // Rule B or C — strip leading whitespace, append.
+            let qualifies: Bool = {
+                if indentedMatch != nil { return prev.kind.allowsContinuation }
+                if prevWide              { return prev.kind.allowsContinuation }
+                return false
+            }()
+            if qualifies {
+                let stripped = curr.drop { $0 == " " || $0 == "\t" }
+                out[out.count - 1] = Line(text: prev.text + stripped, kind: prev.kind)
+            } else {
+                out.append(line)
+            }
+        }
+        return out
     }
 
     /// Walk the line stream, find every "❯"-prefixed line, and mark it
@@ -156,6 +239,19 @@ enum CmuxScreenHighlighter {
         s.trimmingCharacters(in: .whitespaces).hasPrefix("```")
     }
 
+    /// Matches Claude's diff format: optional leading spaces, line number,
+    /// at least one space, `op` (+ or -), one or more spaces, anything.
+    /// Examples that match (op = "+"):
+    ///     "  17 +  let foo = bar"
+    ///     "123 + }"
+    /// Examples that do NOT match:
+    ///     "+ standalone marker"     (no leading line number)
+    ///     "1 + 1 = 2"               (single trailing space token, no op-space-content rule)
+    private static func isDiffLine(_ s: String, op: Character) -> Bool {
+        let pattern = "^\\s*\\d+\\s+\\\(op)\\s"
+        return s.range(of: pattern, options: .regularExpression) != nil
+    }
+
     /// Status spinner glyphs Claude / cmux rotate while busy.
     private static let statusPrefixGlyphs: Set<Character> = [
         "⏺", "✻", "✶", "✳", "✺", "●", "✦", "✧", "✫", "✩",
@@ -193,6 +289,16 @@ enum CmuxScreenHighlighter {
         case "⚠":           return .orange
         case "?":           return .yellow
         default:            return defaultColor
+        }
+    }
+}
+
+private extension CmuxScreenHighlighter.Kind {
+    /// Whether a continuation row may absorb into this kind during unwrap.
+    var allowsContinuation: Bool {
+        switch self {
+        case .userInput, .diffAdded, .diffRemoved: true
+        default: false
         }
     }
 }

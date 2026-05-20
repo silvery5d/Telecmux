@@ -1,12 +1,17 @@
 import SwiftUI
 
-/// Form for adding a new SSH Host. The private key field is the only one
-/// that doesn't round-trip through plain JSON — it's written to the Keychain
-/// under a fresh UUID account and only the account string is saved.
+/// Form for adding **or editing** an SSH Host. When `existing` is non-nil,
+/// the form pre-populates and `Save` updates that record in place;
+/// otherwise it creates a new record. The private key field never
+/// round-trips through the JSON store — only the Keychain account string is
+/// persisted there.
 struct NewHostView: View {
     @Environment(DataStore.self) private var dataStore
     @Environment(\.dismiss) private var dismiss
 
+    /// Existing host being edited, or nil when creating fresh.
+    var existing: Host?
+    /// Called after a successful create (not called on edit).
     var onCreated: ((Host) -> Void)?
 
     // MARK: - form state
@@ -23,6 +28,8 @@ struct NewHostView: View {
         !displayName.isEmpty && !hostname.isEmpty && !username.isEmpty
     }
 
+    private var isEditing: Bool { existing != nil }
+
     // MARK: - body
 
     var body: some View {
@@ -32,8 +39,18 @@ struct NewHostView: View {
                 privateKeySection
                 if let saveFailure { errorSection(saveFailure) }
             }
-            .navigationTitle("New Host")
+            .navigationTitle(isEditing ? "Edit Host" : "New Host")
             .toolbar { toolbar }
+            .task {
+                if let existing {
+                    displayName = existing.displayName
+                    hostname    = existing.hostname
+                    portText    = String(existing.port)
+                    username    = existing.username
+                    // Don't reveal the stored private key; user can re-paste
+                    // to replace, otherwise the Keychain value stays put.
+                }
+            }
         }
     }
 
@@ -70,10 +87,15 @@ struct NewHostView: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
         } header: {
-            Text("Private key (PEM)")
+            Text(isEditing ? "Private key (paste to replace)" : "Private key (PEM)")
         } footer: {
-            Text("Paste the contents of \(Text("~/.ssh/id_ed25519").font(.caption.monospaced())) (or RSA). Stored in the iOS Keychain — never written to the synced JSON store.")
-                .font(.caption2)
+            if isEditing {
+                Text("Leave blank to keep the existing key. Paste a new PEM blob to replace it.")
+                    .font(.caption2)
+            } else {
+                Text("Paste the contents of \(Text("~/.ssh/id_ed25519").font(.caption.monospaced())) (or RSA). Stored in the iOS Keychain — never written to the synced JSON store.")
+                    .font(.caption2)
+            }
         }
     }
 
@@ -99,30 +121,45 @@ struct NewHostView: View {
     private func save() {
         saveFailure = nil
         let port = Int(portText) ?? 22
-
-        // Stash the key in Keychain (if provided) and remember the account
-        // string so SSHConnectionManager can find it later.
-        var keyAccount = ""
         let pasted = privateKey.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Determine the Keychain account for the key.
+        var keyAccount = existing?.privateKeyRef ?? ""
         if !pasted.isEmpty {
-            keyAccount = "ssh-key-\(UUID().uuidString)"
+            // New paste (either first time or replacing) → write a new
+            // account so the old entry can be cleaned up if needed.
+            let account = keyAccount.isEmpty ? "ssh-key-\(UUID().uuidString)" : keyAccount
             do {
-                try KeychainStore.store(Data(pasted.utf8), as: keyAccount)
+                try KeychainStore.store(Data(pasted.utf8), as: account)
+                keyAccount = account
             } catch {
                 saveFailure = error.localizedDescription
                 return
             }
+        } else if !isEditing {
+            // Creating a host without a key is allowed but rarely useful.
+            // The SSH layer will surface "No SSH key set for this host"
+            // on first connect attempt.
         }
 
-        let host = Host(
-            displayName: displayName,
-            hostname: hostname,
-            port: port,
-            username: username,
-            privateKeyRef: keyAccount
-        )
-        dataStore.addHost(host)
-        onCreated?(host)
+        if var host = existing {
+            host.displayName  = displayName
+            host.hostname     = hostname
+            host.port         = port
+            host.username     = username
+            host.privateKeyRef = keyAccount
+            dataStore.updateHost(host)
+        } else {
+            let host = Host(
+                displayName: displayName,
+                hostname: hostname,
+                port: port,
+                username: username,
+                privateKeyRef: keyAccount
+            )
+            dataStore.addHost(host)
+            onCreated?(host)
+        }
         dismiss()
     }
 }

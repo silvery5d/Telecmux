@@ -18,13 +18,14 @@ final class VoiceInputCoordinator {
     /// Text to seed the modal's TextEditor with. Empty for manual entry.
     var transcribedText: String = ""
 
-    /// Called from ribbon button. `settings` decides the transport.
+    /// Called from ribbon button. With voiceProvider == .superWhisper we
+    /// hand off to that app; otherwise we open the in-app modal, which
+    /// hosts the on-device SFSpeechRecognizer-based live transcriber.
     func handleVoiceButton(settings: AppSettings) {
         if settings.voiceProvider == .superWhisper, SuperWhisperProvider.isAvailable {
             SuperWhisperProvider.openForTranscription()
             return
         }
-        // Either provider == .none, or Super Whisper not installed.
         present(prefill: "")
     }
 

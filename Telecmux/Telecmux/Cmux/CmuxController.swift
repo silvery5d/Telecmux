@@ -68,31 +68,55 @@ final class CmuxController {
 
     // MARK: - inventory
 
-    func refreshPanes() async {
+    /// One shot at `cmux --json tree` rebuilds both workspaces and panes
+    /// (and gets pane titles by reading each pane's currently-selected
+    /// surface). Replaces the two separate list-workspaces / list-panes
+    /// fetches because cmux only puts `title` fields on the tree endpoint.
+    func refreshTree() async {
         do {
-            let cmd = selectedWorkspaceRef.map { CmuxCommand.listPanesForWorkspaceJSON($0) }
-                ?? CmuxCommand.listPanesJSON
-            let out = try await ssh.exec(cmd)
-            let wrapper = try Self.decode(CmuxPaneList.self, from: out)
-            panes = wrapper.panes
-            // If we hadn't pinned a workspace yet, adopt whatever cmux's focused one is.
-            if selectedWorkspaceRef == nil, let r = wrapper.workspaceRef {
-                selectedWorkspaceRef = r
+            let out = try await ssh.exec(CmuxCommand.treeJSON)
+            let tree = try Self.decode(CmuxTree.self, from: out)
+            let allWorkspaces = tree.windows.flatMap { $0.workspaces }
+            workspaces = allWorkspaces
+                .map(CmuxWorkspace.init(from:))
+                .sorted { $0.index < $1.index }
+
+            // If nothing picked yet, default to the workspace that owns the
+            // currently-focused pane (or the first workspace).
+            if selectedWorkspaceRef == nil {
+                if let ws = allWorkspaces.first(where: { ws in
+                    ws.panes.contains(where: { $0.focused == true })
+                }) {
+                    selectedWorkspaceRef = ws.ref
+                } else {
+                    selectedWorkspaceRef = allWorkspaces.first?.ref
+                }
+            }
+
+            if let ref = selectedWorkspaceRef,
+               let ws = allWorkspaces.first(where: { $0.ref == ref }) {
+                panes = ws.panes.map { p in
+                    let surfaceTitle =
+                        p.surfaces?.first(where: { $0.selectedInPane == true })?.title
+                        ?? p.surfaces?.first?.title
+                    return CmuxPane(
+                        ref: p.ref,
+                        focused: p.focused ?? false,
+                        index: p.index ?? 0,
+                        surfaceRefs: p.surfaces?.map(\.ref) ?? [],
+                        selectedSurfaceRef: p.selectedSurfaceRef,
+                        title: surfaceTitle
+                    )
+                }
             }
         } catch {
-            logger.error("listPanes failed: \(error)")
+            logger.error("tree failed: \(error)")
         }
     }
 
-    func refreshWorkspaces() async {
-        do {
-            let out = try await ssh.exec(CmuxCommand.listWorkspacesJSON)
-            let wrapper = try Self.decode(CmuxWorkspaceList.self, from: out)
-            workspaces = wrapper.workspaces.sorted { $0.index < $1.index }
-        } catch {
-            logger.error("listWorkspaces failed: \(error)")
-        }
-    }
+    // Compatibility shims — callers haven't migrated yet.
+    func refreshPanes() async { await refreshTree() }
+    func refreshWorkspaces() async { await refreshTree() }
 
     /// Switch which workspace Telecmux is showing. Triggers an immediate
     /// refresh of panes (and notifications, which are already global).
@@ -172,20 +196,16 @@ final class CmuxController {
         }
     }
 
-    /// Poll the inventory (workspaces + panes + notifications) at the given cadence.
-    /// Workspaces refresh more slowly because they rarely change.
+    /// Poll the tree + notifications at the given cadence. Tree returns
+    /// everything (workspaces with titles, panes with surface titles), so
+    /// the picker and the row labels stay in sync.
     func startBoardPolling(interval: TimeInterval) {
         stopPolling()
         pollTask = Task { [weak self] in
-            var tick = 0
             while !Task.isCancelled {
-                if tick % 5 == 0 {
-                    await self?.refreshWorkspaces()
-                }
-                await self?.refreshPanes()
+                await self?.refreshTree()
                 await self?.refreshNotifications()
                 try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
-                tick &+= 1
             }
         }
     }

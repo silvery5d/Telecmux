@@ -21,6 +21,10 @@ struct PaneFocusView: View {
     @State private var showingVoiceModal = false
     @State private var inputText = ""
     @FocusState private var inputFocused: Bool
+    /// When true, every screen update auto-scrolls to the bottom. The user
+    /// can disable this implicitly (by scrolling up) or re-enable by
+    /// tapping the "jump to bottom" button.
+    @State private var autoFollow = true
 
     /// Resolution order:
     ///   1. explicit nav target → its selectedSurfaceRef (or first surface)
@@ -36,9 +40,12 @@ struct PaneFocusView: View {
     private var ssh: SSHConnectionManager { ownedSSH }
     private var host: Host? { dataStore.host(for: session) }
 
-    private var activeRibbon: RibbonConfig {
-        host?.ribbonConfig ?? .cmuxAgent
-    }
+    /// Always use the current preset. The host record carries a frozen
+    /// snapshot of the ribbon at the time it was created, but there's no
+    /// editor UI yet — so reading the live preset means changes to
+    /// `RibbonConfig.cmuxAgent` show up immediately without a per-host
+    /// migration step.
+    private var activeRibbon: RibbonConfig { .cmuxAgent }
 
     var body: some View {
         // Outer GeometryReader pins the VStack to the container's actual
@@ -66,13 +73,8 @@ struct PaneFocusView: View {
         }
         .navigationTitle(paneTitle)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Text(activeRibbon.name)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
+        // Toolbar intentionally minimal — there's no per-pane action that
+        // belongs in the top bar yet.
         .task {
             await bootstrap()
         }
@@ -124,22 +126,58 @@ struct PaneFocusView: View {
 
     private var screenView: some View {
         ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(CmuxScreenHighlighter.lines(controller?.screen ?? "")) { line in
-                        render(line)
+            ZStack(alignment: .bottomTrailing) {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(CmuxScreenHighlighter.lines(
+                            controller?.screen ?? "",
+                            paneColumns: initialPane?.columns ?? 80
+                        )) { line in
+                            render(line)
+                        }
+                        Color.clear.frame(height: 1).id("bottom")
                     }
-                    Color.clear.frame(height: 1).id("bottom")
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 8)
                 }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 8)
-            }
-            .background(Color.black)
-            .onChange(of: controller?.lastScreenUpdate) { _, _ in
-                withAnimation(.easeOut(duration: 0.1)) {
-                    proxy.scrollTo("bottom", anchor: .bottom)
+                .background(Color(white: 0.12))
+                // Any drag the user makes turns off auto-follow. They can
+                // tap the floating "jump" button to opt back in.
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 5)
+                        .onChanged { _ in
+                            if autoFollow { autoFollow = false }
+                        }
+                )
+                .onChange(of: controller?.lastScreenUpdate) { _, _ in
+                    guard autoFollow else { return }
+                    withAnimation(.easeOut(duration: 0.1)) {
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                    }
+                }
+
+                // Floating "jump to bottom" — appears whenever the user
+                // has scrolled away from the tail. Padding chosen to match
+                // the inputBar's send button so both align on the same
+                // vertical axis on the right edge.
+                if !autoFollow {
+                    Button {
+                        autoFollow = true
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            proxy.scrollTo("bottom", anchor: .bottom)
+                        }
+                    } label: {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.system(size: 30))
+                            .foregroundStyle(.white, Color.accentColor)
+                            .shadow(radius: 4)
+                    }
+                    .padding(.trailing, 10)
+                    .padding(.bottom, 10)
+                    .transition(.opacity.combined(with: .scale))
                 }
             }
+            .animation(.easeOut(duration: 0.15), value: autoFollow)
         }
     }
 
@@ -204,13 +242,14 @@ struct PaneFocusView: View {
                 .textSelection(.enabled)
 
         case .userInput:
-            // Reverse video — terminal convention for highlighted text.
+            // Reverse video — black text on a near-white fill, terminal
+            // convention for the user's own command echoes.
             Text(verbatim: line.text)
                 .font(mono)
                 .foregroundColor(.black)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 4)
-                .background(CmuxScreenHighlighter.defaultColor)
+                .background(Color(white: 0.92))
                 .textSelection(.enabled)
 
         case .normal(let color):
@@ -289,6 +328,7 @@ struct PaneFocusView: View {
 
     private var paneTitle: String {
         if let pane = initialPane {
+            if let t = pane.title, !t.isEmpty { return t }
             return "Pane \(pane.index)"
         }
         return surfaceRef ?? session.displayName

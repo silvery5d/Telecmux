@@ -7,8 +7,8 @@ struct RibbonConfigTests {
     @Test func cmuxAgentRibbonShape() {
         let r = RibbonConfig.cmuxAgent
         #expect(r.name == "Cmux Agent")
-        #expect(r.buttons.count == 7)
-        #expect(r.buttons.map(\.label) == ["1", "2", "3", "return", "escape", "bell", "mic.fill"])
+        #expect(r.buttons.count == 6)
+        #expect(r.buttons.map(\.label) == ["1", "2", "3", "return", "Esc", "mic.fill"])
     }
 
     @Test func numberButtonsSendTheirDigit() throws {
@@ -31,21 +31,14 @@ struct RibbonConfigTests {
 
     @Test func escapeButtonSendsEscapeKey() throws {
         guard case .sendKey(let key) = RibbonConfig.cmuxAgent.buttons[4].action else {
-            Issue.record("Expected sendKey action for escape")
+            Issue.record("Expected sendKey action for Esc")
             return
         }
         #expect(key == "escape")
     }
 
-    @Test func bellButtonJumpsToUnread() throws {
-        guard case .jumpToUnread = RibbonConfig.cmuxAgent.buttons[5].action else {
-            Issue.record("Expected jumpToUnread action for bell")
-            return
-        }
-    }
-
     @Test func micButtonOpensVoiceInput() throws {
-        let mic = RibbonConfig.cmuxAgent.buttons[6]
+        let mic = RibbonConfig.cmuxAgent.buttons[5]
         guard case .voiceInput = mic.action else {
             Issue.record("Expected voiceInput action")
             return

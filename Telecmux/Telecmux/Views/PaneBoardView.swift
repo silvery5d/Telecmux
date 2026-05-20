@@ -200,7 +200,7 @@ struct PaneBoardView: View {
         return HStack {
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
-                    Text("Pane \(pane.index)")
+                    Text(pane.title?.isEmpty == false ? pane.title! : "Pane \(pane.index)")
                         .font(.body)
                     if pane.focused {
                         Text("focused")

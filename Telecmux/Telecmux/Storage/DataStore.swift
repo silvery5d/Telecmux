@@ -64,6 +64,14 @@ final class DataStore {
         commit()
     }
 
+    /// Replace an existing host record in-place (by id). No-op if the id
+    /// isn't found.
+    func updateHost(_ host: Host) {
+        guard let idx = hosts.firstIndex(where: { $0.id == host.id }) else { return }
+        hosts[idx] = host
+        commit()
+    }
+
     func host(for session: Session) -> Host? {
         hosts.first(where: { $0.id == session.hostID })
     }
@@ -86,49 +94,41 @@ final class DataStore {
 
     // MARK: - persistence
 
-    /// Read from disk (or iCloud), replacing in-memory state.
+    /// Read from disk, replacing in-memory state.
+    ///
+    /// Strategy: always read local first (the safety net that survives
+    /// iCloud-availability flips between installs), then if iCloud is
+    /// reachable and has a non-empty copy, prefer that one. This way the
+    /// user never sees an empty list just because storage strategy
+    /// changed between launches.
     func load() {
-        let url = storage.url
+        // Pass 1: local always wins as the fallback floor.
+        let localURL = Storage.localFallbackURL()
+        if let payload = decodeFile(at: localURL) {
+            hosts = payload.hosts
+            sessions = payload.sessions
+        }
 
-        // If iCloud hasn't downloaded the file yet, ask for it; the cloud
-        // watcher will retry once it arrives. Don't seed empty data on top
-        // of what might still be syncing.
-        if case .cloud(let cloudURL) = storage,
-           !FileManager.default.fileExists(atPath: cloudURL.path) {
+        // Pass 2: if we're in cloud mode and the cloud file has data,
+        // adopt that view (it's the authoritative cross-device source).
+        guard case .cloud(let cloudURL) = storage else { return }
+        if !FileManager.default.fileExists(atPath: cloudURL.path) {
             try? FileManager.default.startDownloadingUbiquitousItem(at: cloudURL)
             return
         }
-
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
-
-        var fileData: Data?
-        var coordErr: NSError?
-        NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordErr) { coord in
-            fileData = try? Data(contentsOf: coord)
-        }
-        if let coordErr {
-            logger.error("Read coordinator failed: \(coordErr.localizedDescription)")
-            return
-        }
-        guard let fileData else { return }
-
-        do {
-            let payload = try JSONDecoder.telecmux.decode(BackupData.self, from: fileData)
-            hosts = payload.hosts
-            sessions = payload.sessions
-        } catch {
-            logger.error("Decode of \(url.lastPathComponent) failed: \(error.localizedDescription)")
+        if let cloudPayload = decodeFile(at: cloudURL),
+           !(cloudPayload.hosts.isEmpty && cloudPayload.sessions.isEmpty) {
+            hosts = cloudPayload.hosts
+            sessions = cloudPayload.sessions
         }
     }
 
-    /// Encode current state and write it back.
+    /// Encode current state and write it to BOTH local and cloud (when
+    /// applicable). The local file is the safety net for the next install,
+    /// even if that install ends up in cloud mode and the cloud file is
+    /// missing or hasn't downloaded yet.
     func commit() {
-        // Refuse to clobber a non-empty file on disk with an empty in-memory
-        // state. This catches two failure modes:
-        //   1. Boot races where iCloud hasn't downloaded yet
-        //   2. A load() error that left hosts/sessions empty while the
-        //      backing file still has data — without this check, the next
-        //      mutation would silently overwrite the file with zero rows.
+        // Boot-race guard: never overwrite a non-empty file with empty data.
         if hosts.isEmpty, sessions.isEmpty,
            FileManager.default.fileExists(atPath: storage.url.path) {
             logger.warning("Refusing to write empty state on top of existing file")
@@ -147,18 +147,49 @@ final class DataStore {
             return
         }
 
-        var coordErr: NSError?
-        NSFileCoordinator().coordinate(writingItemAt: storage.url,
-                                       options: .forReplacing,
-                                       error: &coordErr) { coord in
+        // Always write local — that's the safety net.
+        writeCoordinated(encoded, to: Storage.localFallbackURL())
+
+        // Additionally write cloud if we have one. NSFileCoordinator handles
+        // multi-device sync collision detection.
+        if case .cloud(let cloudURL) = storage {
+            writeCoordinated(encoded, to: cloudURL)
+        }
+    }
+
+    // MARK: - file IO helpers
+
+    private func decodeFile(at url: URL) -> BackupData? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        var raw: Data?
+        var err: NSError?
+        NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &err) { coord in
+            raw = try? Data(contentsOf: coord)
+        }
+        if let err {
+            logger.error("Read \(url.lastPathComponent) failed: \(err.localizedDescription)")
+            return nil
+        }
+        guard let raw else { return nil }
+        do {
+            return try JSONDecoder.telecmux.decode(BackupData.self, from: raw)
+        } catch {
+            logger.error("Decode \(url.lastPathComponent) failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private func writeCoordinated(_ data: Data, to url: URL) {
+        var err: NSError?
+        NSFileCoordinator().coordinate(writingItemAt: url, options: .forReplacing, error: &err) { coord in
             do {
-                try encoded.write(to: coord, options: .atomic)
+                try data.write(to: coord, options: .atomic)
             } catch {
-                logger.error("Write failed: \(error.localizedDescription)")
+                logger.error("Write \(url.lastPathComponent) failed: \(error.localizedDescription)")
             }
         }
-        if let coordErr {
-            logger.error("Write coordinator failed: \(coordErr.localizedDescription)")
+        if let err {
+            logger.error("Write coordinator \(url.lastPathComponent) failed: \(err.localizedDescription)")
         }
     }
 

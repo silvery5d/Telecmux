@@ -11,8 +11,7 @@ struct RibbonConfig: Codable, Hashable {
         RibbonButton(label: "2",        kind: .text,     action: .sendText("2")),
         RibbonButton(label: "3",        kind: .text,     action: .sendText("3")),
         RibbonButton(label: "return",   kind: .sfSymbol, action: .sendText("\n")),
-        RibbonButton(label: "escape",   kind: .sfSymbol, action: .sendKey("escape")),
-        RibbonButton(label: "bell",     kind: .sfSymbol, action: .jumpToUnread),
+        RibbonButton(label: "Esc",      kind: .text,     action: .sendKey("escape")),
         RibbonButton(label: "mic.fill", kind: .sfSymbol, action: .voiceInput),
     ])
 
