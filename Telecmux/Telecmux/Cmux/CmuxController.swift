@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-private let logger = Logger(subsystem: "com.diwu.telecmux", category: "Cmux")
+private let logger = Logger(subsystem: "com.telecmux.app", category: "Cmux")
 
 /// Drives a remote cmux app via short-lived `cmux <subcommand>` calls over an
 /// already-connected `SSHConnectionManager`. One controller per active session.

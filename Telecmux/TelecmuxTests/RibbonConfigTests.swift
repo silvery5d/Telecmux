@@ -8,11 +8,11 @@ struct RibbonConfigTests {
         let r = RibbonConfig.cmuxAgent
         #expect(r.name == "Cmux Agent")
         #expect(r.buttons.count == 6)
-        #expect(r.buttons.map(\.label) == ["1", "2", "3", "return", "Esc", "mic.fill"])
+        #expect(r.buttons.map(\.label) == ["1", "2", "delete.left", "return", "Esc", "mic.fill"])
     }
 
     @Test func numberButtonsSendTheirDigit() throws {
-        for (i, expected) in ["1", "2", "3"].enumerated() {
+        for (i, expected) in ["1", "2"].enumerated() {
             guard case .sendText(let value) = RibbonConfig.cmuxAgent.buttons[i].action else {
                 Issue.record("Expected sendText action at index \(i)")
                 return
@@ -21,12 +21,20 @@ struct RibbonConfigTests {
         }
     }
 
-    @Test func returnButtonSendsNewline() throws {
-        guard case .sendText(let value) = RibbonConfig.cmuxAgent.buttons[3].action else {
-            Issue.record("Expected sendText action for return")
+    @Test func deleteButtonSendsBackspace() throws {
+        guard case .sendKey(let key) = RibbonConfig.cmuxAgent.buttons[2].action else {
+            Issue.record("Expected sendKey action for delete")
             return
         }
-        #expect(value == "\n")
+        #expect(key == "backspace")
+    }
+
+    @Test func returnButtonSendsEnterKey() throws {
+        guard case .sendKey(let key) = RibbonConfig.cmuxAgent.buttons[3].action else {
+            Issue.record("Expected sendKey action for return")
+            return
+        }
+        #expect(key == "enter")
     }
 
     @Test func escapeButtonSendsEscapeKey() throws {

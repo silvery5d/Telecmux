@@ -27,7 +27,7 @@ xcodebuild -project Telecmux.xcodeproj -scheme Telecmux \
   build
 xcrun devicectl device install app --device $DEVICE_ID \
   ~/Library/Developer/Xcode/DerivedData/Telecmux-*/Build/Products/Debug-iphoneos/Telecmux.app
-xcrun devicectl device process launch --device $DEVICE_ID com.diwu.telecmux
+xcrun devicectl device process launch --device $DEVICE_ID com.telecmux.app
 
 # 2b. Simulator
 xcodebuild -project Telecmux.xcodeproj -scheme Telecmux \

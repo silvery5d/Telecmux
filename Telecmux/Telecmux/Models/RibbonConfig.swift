@@ -7,10 +7,13 @@ struct RibbonConfig: Codable, Hashable {
 
     /// The default ribbon for cmux pane focus.
     static let cmuxAgent = RibbonConfig(name: "Cmux Agent", buttons: [
-        RibbonButton(label: "1",        kind: .text,     action: .sendText("1")),
-        RibbonButton(label: "2",        kind: .text,     action: .sendText("2")),
-        RibbonButton(label: "3",        kind: .text,     action: .sendText("3")),
-        RibbonButton(label: "return",   kind: .sfSymbol, action: .sendText("\n")),
+        RibbonButton(label: "1",          kind: .text,     action: .sendText("1")),
+        RibbonButton(label: "2",          kind: .text,     action: .sendText("2")),
+        RibbonButton(label: "delete.left", kind: .sfSymbol, action: .sendKey("backspace")),
+        // Use sendKey('enter') rather than sendText('\n'): shell command
+        // substitution strips trailing newlines, so a bare "\n" payload
+        // arrives at cmux as empty and gets rejected with CommandFailed.
+        RibbonButton(label: "return",   kind: .sfSymbol, action: .sendKey("enter")),
         RibbonButton(label: "Esc",      kind: .text,     action: .sendKey("escape")),
         RibbonButton(label: "mic.fill", kind: .sfSymbol, action: .voiceInput),
     ])

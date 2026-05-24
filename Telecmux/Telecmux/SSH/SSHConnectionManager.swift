@@ -5,7 +5,7 @@ import NIOCore
 import NIOSSH
 import os
 
-private let logger = Logger(subsystem: "com.diwu.telecmux", category: "SSH")
+private let logger = Logger(subsystem: "com.telecmux.app", category: "SSH")
 
 /// Owns a long-lived non-interactive SSH session to a single Host.
 ///

@@ -20,7 +20,7 @@
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>com.diwu.telecmux</string>
+			<string>com.telecmux.app</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>telecmux</string>

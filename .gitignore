@@ -35,6 +35,10 @@ Telecmux/fastlane/.env
 Telecmux/*.ipa
 Telecmux/*.app.dSYM.zip
 
+# App Store Connect API key (never commit)
+*.p8
+AuthKey_*
+
 # Bundler
 .bundle/
 Telecmux/vendor/bundle

@@ -1,2 +1,2 @@
-app_identifier("com.diwu.telecmux")
+app_identifier("com.telecmux.app")
 team_id(ENV["TEAM_ID"])

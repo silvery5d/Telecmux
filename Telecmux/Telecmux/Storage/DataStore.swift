@@ -1,7 +1,7 @@
 import Foundation
 import os
 
-private let logger = Logger(subsystem: "com.diwu.telecmux", category: "DataStore")
+private let logger = Logger(subsystem: "com.telecmux.app", category: "DataStore")
 
 /// Persists the user's Host + Session list as a single JSON file.
 ///
@@ -253,7 +253,7 @@ extension DataStore {
         case local(URL)
 
         static let fileName = "telecmux-data.json"
-        static let containerID = "iCloud.com.diwu.telecmux"
+        static let containerID = "iCloud.com.telecmux.app"
 
         var url: URL {
             switch self {
