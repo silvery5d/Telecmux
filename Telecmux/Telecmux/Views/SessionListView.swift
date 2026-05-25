@@ -45,6 +45,16 @@ struct SessionListView: View {
             .navigationDestination(item: $selectedSession) { session in
                 destination(for: session)
             }
+            .task {
+                // Screenshot automation: auto-open the first session so the
+                // capture script can grab the board/pane views without UI taps.
+                let env = ProcessInfo.processInfo.environment["TELECMUX_SCREENSHOT"]
+                if (env == "board" || env == "focus"),
+                   selectedSession == nil,
+                   let first = dataStore.sessions.first {
+                    selectedSession = first
+                }
+            }
         }
     }
 

@@ -39,6 +39,12 @@ struct PaneBoardView: View {
             await ssh.connectExecOnly(host: host)
             await c.probe()
             c.startBoardPolling(interval: 2.0)
+            // Screenshot automation: after the first tree load, auto-open the
+            // focused pane so the capture script can grab PaneFocusView.
+            if ProcessInfo.processInfo.environment["TELECMUX_SCREENSHOT"] == "focus" {
+                await c.refreshTree()
+                navTarget = c.panes.first(where: { $0.focused }) ?? c.panes.first
+            }
         }
         .onDisappear {
             controller?.stopPolling()

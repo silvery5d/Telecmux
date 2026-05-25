@@ -1,0 +1,13 @@
+Telecmux is a focused iOS remote for cmux — the native macOS terminal built for AI coding agents.
+
+Run Claude Code (and other agents) in parallel on your Mac, then reach back to them from your phone:
+
+• See every workspace, pane, and pending agent notification at a glance
+• Read live terminal output, with highlighting for diffs, status lines, and prompts
+• Answer agent prompts in one tap with the soft-key ribbon (1 / 2 / delete / return / Esc)
+• Send free text or dictate by voice (on-device speech recognition)
+• Switch between workspaces without touching your Mac
+
+Connects over SSH using key authentication. Your private keys stay in the iOS Keychain and never leave your device. Host configuration syncs across your devices via iCloud Drive.
+
+Requires a Mac running cmux 0.64+ with socket automation enabled. Not a general-purpose terminal — built specifically for the parallel-AI-agent workflow.
