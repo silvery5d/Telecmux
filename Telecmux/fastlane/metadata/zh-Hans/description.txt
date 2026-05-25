@@ -1,0 +1,13 @@
+Telecmux 是 cmux 的专属 iOS 遥控 —— cmux 是为 AI 编程 agent 打造的原生 macOS 终端。
+
+在 Mac 上并行跑 Claude Code（以及其他 agent），然后用手机隔空操控：
+
+• 一眼看全所有 workspace、pane 和等待中的 agent 通知
+• 实时读取终端输出，diff、状态行、提示符都有配色高亮
+• 用底部软键一键回答 agent 的提问（1 / 2 / 删除 / 回车 / Esc）
+• 输入自由文本，或用语音听写（设备本地识别，不上传）
+• 不碰 Mac 就能切换 workspace
+
+通过 SSH 密钥认证连接。私钥保存在 iOS 钥匙串，绝不离开你的设备。Host 配置通过 iCloud Drive 在你的设备间同步。
+
+需要 Mac 上运行 cmux 0.64+ 并开启 socket 自动化。这不是通用终端 —— 它专为「并行 AI agent」工作流设计。
