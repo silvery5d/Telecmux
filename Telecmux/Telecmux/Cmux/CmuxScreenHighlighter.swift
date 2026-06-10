@@ -122,7 +122,20 @@ enum CmuxScreenHighlighter {
     ///   verbatim (the view renders rows un-wrapped at the pane's native
     ///   width with pan + zoom), so no collapsing or merging is wanted.
     static func lines(_ screen: String, paneColumns: Int = 80, reflow: Bool = true) -> [Line] {
+        // Trim trailing whitespace per row: after a pane shrinks (e.g. a
+        // sidebar re-opens on the Mac), scrollback rows written at the old
+        // full width keep their cell padding as trailing spaces. The widest
+        // row dictates the two-axis scroll content width, so that padding
+        // showed up as unreclaimable blank space on the right.
         let rawLines = screen.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { slice -> Substring in
+                var end = slice.endIndex
+                while end > slice.startIndex {
+                    let prev = slice.index(before: end)
+                    if slice[prev] == " " || slice[prev] == "\t" { end = prev } else { break }
+                }
+                return slice[slice.startIndex..<end]
+            }
         var result: [Line] = []
         var inCodeFence = false
         var lastWasDivider = false
