@@ -326,10 +326,22 @@ enum CmuxScreenHighlighter {
     /// kern pass for unchanged rows. Bounded by periodic wholesale reset.
     private static var gridCache: [String: AttributedString] = [:]
 
+    /// Bright blue for inline URLs / file paths — the closest plain-text
+    /// stand-in for the links Claude Code colors blue on the Mac.
+    private static let inlineLinkColor = Color(red: 0.38, green: 0.66, blue: 1.0)
+    private static let inlinePatterns: [NSRegularExpression] = {
+        let sources = [
+            #"https?://[^\s)\]>'\"]+"#,
+            #"(?:[\w@~.-]+/)*[\w.-]+\.(?:swift|ts|tsx|js|jsx|py|go|rs|rb|md|json|yml|yaml|toml|sh|c|cc|cpp|h|hpp|m|mm|css|html|sql|proto)(?::\d+)?"#,
+        ]
+        return sources.compactMap { try? NSRegularExpression(pattern: $0) }
+    }()
+
     static func gridAttributed(_ text: String,
                                fontSize: CGFloat,
-                               weight: UIFont.Weight = .regular) -> AttributedString {
-        let cacheKey = "\(Int(fontSize * 100))|\(weight.rawValue)|\(text)"
+                               weight: UIFont.Weight = .regular,
+                               inlineHighlights: Bool = false) -> AttributedString {
+        let cacheKey = "\(Int(fontSize * 100))|\(weight.rawValue)|\(inlineHighlights ? 1 : 0)|\(text)"
         if let hit = gridCache[cacheKey] { return hit }
         if gridCache.count > 4000 { gridCache.removeAll(keepingCapacity: true) }
 
@@ -355,6 +367,20 @@ enum CmuxScreenHighlighter {
         if let start = runStart {
             attr[start..<attr.endIndex].kern = wideKern
         }
+        // Inline URL / file-path tinting (normal rows only — reverse-video
+        // and diff rows keep their uniform treatment).
+        if inlineHighlights {
+            let ns = text as NSString
+            let full = NSRange(location: 0, length: ns.length)
+            for regex in inlinePatterns {
+                for m in regex.matches(in: text, range: full) {
+                    if let r = Range(m.range, in: text), let ar = Range(r, in: attr) {
+                        attr[ar].foregroundColor = inlineLinkColor
+                    }
+                }
+            }
+        }
+
         gridCache[cacheKey] = attr
         return attr
     }
@@ -501,9 +527,11 @@ enum CmuxScreenHighlighter {
         while head.hasPrefix("⏵") || head.hasPrefix("▶") {
             head = String(head.dropFirst()).trimmingCharacters(in: .whitespaces)
         }
-        if head.hasPrefix("plan mode on")    { return Color(red: 0.70, green: 0.55, blue: 1.00) } // violet
-        if head.hasPrefix("accept edits on") { return Color(red: 1.00, green: 0.78, blue: 0.30) } // amber
-        if head.hasPrefix("auto mode on")    { return Color(red: 0.40, green: 0.85, blue: 0.95) } // cyan
+        // Colors match Claude Code's TUI as observed on the user's Mac:
+        // plan = deep green, accept edits = purple, auto = orange.
+        if head.hasPrefix("plan mode on")    { return Color(red: 0.25, green: 0.65, blue: 0.40) } // deep green
+        if head.hasPrefix("accept edits on") { return Color(red: 0.70, green: 0.50, blue: 0.95) } // purple
+        if head.hasPrefix("auto mode on")    { return Color(red: 1.00, green: 0.62, blue: 0.26) } // orange
         return nil
     }
 

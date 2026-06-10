@@ -319,8 +319,10 @@ struct PaneFocusView: View {
                 .textSelection(.enabled)
 
         case .status:
+            // Claude's spinner line is its rust/orange brand color on the
+            // Mac — gray undersold it.
             Text(CmuxScreenHighlighter.gridAttributed(line.text, fontSize: fontSize))
-                .foregroundColor(.gray)
+                .foregroundColor(Color(red: 0.85, green: 0.49, blue: 0.34))
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
                 .textSelection(.enabled)
@@ -372,7 +374,9 @@ struct PaneFocusView: View {
                 .textSelection(.enabled)
 
         case .normal(let color):
-            Text(CmuxScreenHighlighter.gridAttributed(line.text.isEmpty ? " " : line.text, fontSize: fontSize))
+            Text(CmuxScreenHighlighter.gridAttributed(line.text.isEmpty ? " " : line.text,
+                                                      fontSize: fontSize,
+                                                      inlineHighlights: true))
                 .foregroundColor(color)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
@@ -388,6 +392,23 @@ struct PaneFocusView: View {
 
     private var inputBar: some View {
         HStack(alignment: .bottom, spacing: 8) {
+            // Cycle Claude Code's permission mode (default → auto → plan)
+            // exactly like pressing shift+tab on the Mac.
+            Button {
+                guard let ref = surfaceRef else { return }
+                Task {
+                    await controller?.sendKey(surfaceRef: ref, key: "shift+tab")
+                    debounceRefresh()
+                }
+            } label: {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 18))
+                    .foregroundStyle(.gray)
+                    .frame(width: 30, height: 36)
+            }
+            .accessibilityLabel("Cycle Claude mode (shift+tab)")
+            .disabled(surfaceRef == nil)
+
             // Live toggle — bolt on = keystrokes stream straight to cmux.
             if Self.liveInputEnabled {
                 Button {
