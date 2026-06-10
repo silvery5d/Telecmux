@@ -1,1 +1,4 @@
-First public release.
+• New direction joystick: floats at the bottom-right of the terminal; drag to send arrow keys, hold to auto-repeat
+• New live input mode: toggle the bolt on the input bar and keystrokes stream straight to the session (IME-aware for Chinese input)
+• Space key added to the main ribbon
+• Fixed Esc button label wrapping
