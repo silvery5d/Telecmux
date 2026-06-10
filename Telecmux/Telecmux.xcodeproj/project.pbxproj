@@ -22,6 +22,8 @@
 		23E6FFF7CBAA7AABAE61BD6D /* NewSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D4E3F8BA81DD11469FAE479 /* NewSessionView.swift */; };
 		56E185D7340403E3A2698C5B /* NewHostView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C37793D32B81DDE173E82EAD /* NewHostView.swift */; };
 		B80371DE1CA43395E2B4C53B /* VoiceInputModal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DEAE89058FED6E1760B2389 /* VoiceInputModal.swift */; };
+		B8B8B8B8B8B8B8B8B8LIVE08 /* LiveInputField.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8F8F8F8F8F8F8F8F8LIVE08 /* LiveInputField.swift */; };
+		B9B9B9B9B9B9B9B9B9JOYS09 /* DirectionJoystick.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9F9F9F9F9F9F9F9F9JOYS09 /* DirectionJoystick.swift */; };
 		9427E70309498CDBF08B3846 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD59E0EB71DC1D5B631D2753 /* SettingsView.swift */; };
 		A1B2C3D4E5F60718192A3B4C /* AboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5E6F708192A3B4C5D6E7F80 /* AboutView.swift */; };
 		B3C4D5E6F7081920CCCCDDDD /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A2B3C4D5E6F70819AAAABBBB /* Assets.xcassets */; };
@@ -65,6 +67,8 @@
 		8D4E3F8BA81DD11469FAE479 /* NewSessionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewSessionView.swift; sourceTree = "<group>"; };
 		C37793D32B81DDE173E82EAD /* NewHostView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewHostView.swift; sourceTree = "<group>"; };
 		9DEAE89058FED6E1760B2389 /* VoiceInputModal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputModal.swift; sourceTree = "<group>"; };
+		F8F8F8F8F8F8F8F8F8LIVE08 /* LiveInputField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveInputField.swift; sourceTree = "<group>"; };
+		F9F9F9F9F9F9F9F9F9JOYS09 /* DirectionJoystick.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectionJoystick.swift; sourceTree = "<group>"; };
 		CD59E0EB71DC1D5B631D2753 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		0096DDB5D5C93DB7732319BF /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		281571BEA9FA0A063ED80B4A /* ModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelTests.swift; sourceTree = "<group>"; };
@@ -191,6 +195,8 @@
 				F4F4F4F4F4F4F4F4F4VIEW04 /* PaneBoardView.swift */,
 				F5F5F5F5F5F5F5F5F5VIEW05 /* PaneFocusView.swift */,
 				9DEAE89058FED6E1760B2389 /* VoiceInputModal.swift */,
+				F8F8F8F8F8F8F8F8F8LIVE08 /* LiveInputField.swift */,
+				F9F9F9F9F9F9F9F9F9JOYS09 /* DirectionJoystick.swift */,
 				CD59E0EB71DC1D5B631D2753 /* SettingsView.swift */,
 				D5E6F708192A3B4C5D6E7F80 /* AboutView.swift */,
 			);
@@ -302,6 +308,8 @@
 				23E6FFF7CBAA7AABAE61BD6D /* NewSessionView.swift in Sources */,
 				56E185D7340403E3A2698C5B /* NewHostView.swift in Sources */,
 				B80371DE1CA43395E2B4C53B /* VoiceInputModal.swift in Sources */,
+				B8B8B8B8B8B8B8B8B8LIVE08 /* LiveInputField.swift in Sources */,
+				B9B9B9B9B9B9B9B9B9JOYS09 /* DirectionJoystick.swift in Sources */,
 				9427E70309498CDBF08B3846 /* SettingsView.swift in Sources */,
 				A1B2C3D4E5F60718192A3B4C /* AboutView.swift in Sources */,
 				B1B1B1B1B1B1B1B1B1CMUX01 /* CmuxModels.swift in Sources */,

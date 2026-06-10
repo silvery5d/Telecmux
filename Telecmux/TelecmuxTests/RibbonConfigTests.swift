@@ -7,8 +7,15 @@ struct RibbonConfigTests {
     @Test func cmuxAgentRibbonShape() {
         let r = RibbonConfig.cmuxAgent
         #expect(r.name == "Cmux Agent")
-        #expect(r.buttons.count == 6)
-        #expect(r.buttons.map(\.label) == ["1", "2", "delete.left", "return", "Esc", "mic.fill"])
+        #expect(r.buttons.count == 7)
+        #expect(r.buttons.map(\.label) == ["1", "2", "delete.left", "space", "return", "Esc", "mic.fill"])
+    }
+
+    @Test func spaceButtonSendsSpaceChar() throws {
+        guard case .sendText(let t) = RibbonConfig.cmuxAgent.buttons[3].action else {
+            Issue.record("Expected sendText for space"); return
+        }
+        #expect(t == " ")
     }
 
     @Test func numberButtonsSendTheirDigit() throws {
@@ -30,7 +37,7 @@ struct RibbonConfigTests {
     }
 
     @Test func returnButtonSendsEnterKey() throws {
-        guard case .sendKey(let key) = RibbonConfig.cmuxAgent.buttons[3].action else {
+        guard case .sendKey(let key) = RibbonConfig.cmuxAgent.buttons[4].action else {
             Issue.record("Expected sendKey action for return")
             return
         }
@@ -38,7 +45,7 @@ struct RibbonConfigTests {
     }
 
     @Test func escapeButtonSendsEscapeKey() throws {
-        guard case .sendKey(let key) = RibbonConfig.cmuxAgent.buttons[4].action else {
+        guard case .sendKey(let key) = RibbonConfig.cmuxAgent.buttons[5].action else {
             Issue.record("Expected sendKey action for Esc")
             return
         }
@@ -46,7 +53,7 @@ struct RibbonConfigTests {
     }
 
     @Test func micButtonOpensVoiceInput() throws {
-        let mic = RibbonConfig.cmuxAgent.buttons[5]
+        let mic = RibbonConfig.cmuxAgent.buttons[6]
         guard case .voiceInput = mic.action else {
             Issue.record("Expected voiceInput action")
             return
@@ -54,7 +61,8 @@ struct RibbonConfigTests {
         #expect(mic.kind == .sfSymbol)
     }
 
-    @Test func presetsContainsCmuxAgent() {
+    @Test func presetsContainsOnlyCmuxAgent() {
+        // Arrow keys moved to the floating joystick; one ribbon remains.
         #expect(RibbonConfig.presets == [.cmuxAgent])
     }
 

@@ -21,6 +21,13 @@ struct PaneFocusView: View {
     @State private var showingVoiceModal = false
     @State private var inputText = ""
     @FocusState private var inputFocused: Bool
+    /// Live input: when on, each committed keystroke (IME-aware) is forwarded
+    /// to the surface immediately — no send button needed.
+    @State private var liveInput = false
+    @State private var liveText = ""
+    /// Serial chain that keeps live keystrokes arriving in order even though
+    /// each one is an async SSH exec.
+    @State private var liveSendChain: Task<Void, Never>?
     /// When true, every screen update auto-scrolls to the bottom. The user
     /// can disable this implicitly (by scrolling up) or re-enable by
     /// tapping the "jump to bottom" button.
@@ -40,12 +47,14 @@ struct PaneFocusView: View {
     private var ssh: SSHConnectionManager { ownedSSH }
     private var host: Host? { dataStore.host(for: session) }
 
-    /// Always use the current preset. The host record carries a frozen
-    /// snapshot of the ribbon at the time it was created, but there's no
-    /// editor UI yet — so reading the live preset means changes to
-    /// `RibbonConfig.cmuxAgent` show up immediately without a per-host
-    /// migration step.
-    private var activeRibbon: RibbonConfig { .cmuxAgent }
+    /// Which preset ribbon is showing. Cycled by the toolbar switch button.
+    @State private var ribbonIndex = 0
+
+    /// Live preset list — ignores the host's frozen ribbon snapshot (there's
+    /// no per-host editor UI yet) so preset changes show up immediately.
+    private var activeRibbon: RibbonConfig {
+        RibbonConfig.presets[ribbonIndex % RibbonConfig.presets.count]
+    }
 
     var body: some View {
         // Outer GeometryReader pins the VStack to the container's actual
@@ -73,8 +82,18 @@ struct PaneFocusView: View {
         }
         .navigationTitle(paneTitle)
         .navigationBarTitleDisplayMode(.inline)
-        // Toolbar intentionally minimal — there's no per-pane action that
-        // belongs in the top bar yet.
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                if RibbonConfig.presets.count > 1 {
+                    Button {
+                        ribbonIndex = (ribbonIndex + 1) % RibbonConfig.presets.count
+                    } label: {
+                        Image(systemName: "keyboard.chevron.compact.down")
+                    }
+                    .accessibilityLabel("Switch ribbon (\(activeRibbon.name))")
+                }
+            }
+        }
         .task {
             await bootstrap()
         }
@@ -156,26 +175,32 @@ struct PaneFocusView: View {
                     }
                 }
 
-                // Floating "jump to bottom" — appears whenever the user
-                // has scrolled away from the tail. Padding chosen to match
-                // the inputBar's send button so both align on the same
-                // vertical axis on the right edge.
-                if !autoFollow {
-                    Button {
-                        autoFollow = true
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            proxy.scrollTo("bottom", anchor: .bottom)
+                // Right-edge floating controls: arrow-key joystick anchored
+                // at the bottom corner; "jump to bottom" appears above it
+                // when the user has scrolled away from the tail.
+                VStack(alignment: .trailing, spacing: 10) {
+                    if !autoFollow {
+                        Button {
+                            autoFollow = true
+                            withAnimation(.easeOut(duration: 0.2)) {
+                                proxy.scrollTo("bottom", anchor: .bottom)
+                            }
+                        } label: {
+                            Image(systemName: "arrow.down.circle.fill")
+                                .font(.system(size: 30))
+                                .foregroundStyle(.white, Color.accentColor)
+                                .shadow(radius: 4)
                         }
-                    } label: {
-                        Image(systemName: "arrow.down.circle.fill")
-                            .font(.system(size: 30))
-                            .foregroundStyle(.white, Color.accentColor)
-                            .shadow(radius: 4)
+                        .transition(.opacity.combined(with: .scale))
                     }
-                    .padding(.trailing, 10)
-                    .padding(.bottom, 10)
-                    .transition(.opacity.combined(with: .scale))
+
+                    DirectionJoystick { key in
+                        guard let ref = surfaceRef else { return }
+                        await controller?.sendKey(surfaceRef: ref, key: key)
+                    }
                 }
+                .padding(.trailing, 10)
+                .padding(.bottom, 10)
             }
             .animation(.easeOut(duration: 0.15), value: autoFollow)
         }
@@ -263,22 +288,55 @@ struct PaneFocusView: View {
 
     private var inputBar: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            TextField("Send text to surface…", text: $inputText, axis: .vertical)
-                .focused($inputFocused)
-                .font(.body)
-                .lineLimit(1...4)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18))
-
+            // Live toggle — bolt on = keystrokes stream straight to cmux.
             Button {
-                sendInputText()
+                liveInput.toggle()
+                liveText = ""
             } label: {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 30))
-                    .foregroundStyle(inputText.isEmpty ? .gray : .blue)
+                Image(systemName: liveInput ? "bolt.fill" : "bolt.slash")
+                    .font(.system(size: 20))
+                    .foregroundStyle(liveInput ? .yellow : .gray)
+                    .frame(width: 30, height: 36)
             }
-            .disabled(inputText.isEmpty || surfaceRef == nil)
+            .accessibilityLabel(liveInput ? "Live input on" : "Live input off")
+
+            if liveInput {
+                LiveInputField(
+                    text: $liveText,
+                    placeholder: "Live → surface",
+                    onDelta: { deletes, inserts in
+                        enqueueLiveDelta(deletes: deletes, inserts: inserts)
+                    },
+                    onReturn: {
+                        enqueueLiveReturn()
+                    }
+                )
+                .frame(minHeight: 36)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18)
+                        .stroke(Color.yellow.opacity(0.5), lineWidth: 1)
+                )
+            } else {
+                TextField("Send text to surface…", text: $inputText, axis: .vertical)
+                    .focused($inputFocused)
+                    .font(.body)
+                    .lineLimit(1...4)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18))
+
+                Button {
+                    sendInputText()
+                } label: {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 30))
+                        .foregroundStyle(inputText.isEmpty ? .gray : .blue)
+                }
+                .disabled(inputText.isEmpty || surfaceRef == nil)
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
@@ -295,6 +353,37 @@ struct PaneFocusView: View {
         }
     }
 
+    // MARK: - live input forwarding
+
+    /// Append one delta to the serial send chain. Order matters (backspaces
+    /// must land before the replacement characters), and each send is an
+    /// async SSH exec — chaining on the previous task guarantees FIFO.
+    private func enqueueLiveDelta(deletes: Int, inserts: String) {
+        guard let ref = surfaceRef, deletes > 0 || !inserts.isEmpty else { return }
+        let previous = liveSendChain
+        liveSendChain = Task {
+            await previous?.value
+            for _ in 0..<deletes {
+                await controller?.sendKey(surfaceRef: ref, key: "backspace")
+            }
+            if !inserts.isEmpty {
+                await controller?.send(surfaceRef: ref, text: inserts)
+            }
+        }
+    }
+
+    private func enqueueLiveReturn() {
+        guard let ref = surfaceRef else { return }
+        let previous = liveSendChain
+        liveSendChain = Task {
+            await previous?.value
+            await controller?.sendKey(surfaceRef: ref, key: "enter")
+        }
+        // Line is committed remotely; reset the local mirror for the next one.
+        liveText = ""
+        debounceRefresh()
+    }
+
     private var ribbonBar: some View {
         // Buttons share the available width equally instead of each one
         // demanding a fixed minWidth — that combination overflows the
@@ -309,6 +398,8 @@ struct PaneFocusView: View {
                         case .text:
                             Text(button.label)
                                 .font(.system(.body, design: .monospaced, weight: .medium))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.6)  // "Esc" must not wrap in a narrow slot
                         case .sfSymbol:
                             Image(systemName: button.label)
                                 .font(.body)

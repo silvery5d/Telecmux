@@ -5,19 +5,25 @@ struct RibbonConfig: Codable, Hashable {
     var name: String
     var buttons: [RibbonButton]
 
-    /// The default ribbon for cmux pane focus.
+    /// The single ribbon for cmux pane focus. Arrow keys live on the
+    /// floating joystick (DirectionJoystick), not here.
+    /// - return/Esc use sendKey: shell command substitution strips a bare
+    ///   "\n" payload, so a key event is the only reliable Enter.
+    /// - space uses sendText(" "): a literal space survives the shell
+    ///   wrapper (only trailing newlines get stripped), and cmux send-key
+    ///   may not name a "space" key.
     static let cmuxAgent = RibbonConfig(name: "Cmux Agent", buttons: [
-        RibbonButton(label: "1",          kind: .text,     action: .sendText("1")),
-        RibbonButton(label: "2",          kind: .text,     action: .sendText("2")),
+        RibbonButton(label: "1",           kind: .text,     action: .sendText("1")),
+        RibbonButton(label: "2",           kind: .text,     action: .sendText("2")),
         RibbonButton(label: "delete.left", kind: .sfSymbol, action: .sendKey("backspace")),
-        // Use sendKey('enter') rather than sendText('\n'): shell command
-        // substitution strips trailing newlines, so a bare "\n" payload
-        // arrives at cmux as empty and gets rejected with CommandFailed.
-        RibbonButton(label: "return",   kind: .sfSymbol, action: .sendKey("enter")),
-        RibbonButton(label: "Esc",      kind: .text,     action: .sendKey("escape")),
-        RibbonButton(label: "mic.fill", kind: .sfSymbol, action: .voiceInput),
+        RibbonButton(label: "space",       kind: .sfSymbol, action: .sendText(" ")),
+        RibbonButton(label: "return",      kind: .sfSymbol, action: .sendKey("enter")),
+        RibbonButton(label: "Esc",         kind: .text,     action: .sendKey("escape")),
+        RibbonButton(label: "mic.fill",    kind: .sfSymbol, action: .voiceInput),
     ])
 
+    /// Ribbons the user can cycle through (toolbar button auto-hides when
+    /// there's only one).
     static let presets: [RibbonConfig] = [.cmuxAgent]
 }
 
