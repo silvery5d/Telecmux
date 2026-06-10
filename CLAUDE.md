@@ -25,8 +25,12 @@ xcodebuild -project Telecmux.xcodeproj -scheme Telecmux \
   -allowProvisioningUpdates \
   DEVELOPMENT_TEAM=$TEAM_ID \
   build
-xcrun devicectl device install app --device $DEVICE_ID \
-  ~/Library/Developer/Xcode/DerivedData/Telecmux-*/Build/Products/Debug-iphoneos/Telecmux.app
+# IMPORTANT: verify the bundle id before installing. A stale DerivedData
+# dir from before the com.diwu.telecmux -> com.telecmux.app rename once made
+# `Telecmux-*` glob/head -1 grab an old .app and resurrect a deleted bundle.
+APP=$(find ~/Library/Developer/Xcode/DerivedData/Telecmux-* -name "Telecmux.app" -path "*Debug-iphoneos*" | head -1)
+defaults read "$APP/Info.plist" CFBundleIdentifier   # must print com.telecmux.app
+xcrun devicectl device install app --device $DEVICE_ID "$APP"
 xcrun devicectl device process launch --device $DEVICE_ID com.telecmux.app
 
 # 2b. Simulator
