@@ -136,9 +136,18 @@ final class CmuxController {
 
     // MARK: - per-surface
 
+    /// How many scrollback rows every poll fetches. Always covers several
+    /// screens of history so upward scrolling needs no separate "history
+    /// mode"; the view deepens this when the user nears the loaded top.
+    var scrollbackDepth: Int = 300
+
     func refreshScreen(surfaceRef: String) async {
         do {
-            let text = try await ssh.exec(CmuxCommand.readScreen(surfaceRef: surfaceRef))
+            let text = try await ssh.exec(
+                CmuxCommand.readScreen(surfaceRef: surfaceRef,
+                                       scrollback: true,
+                                       lines: scrollbackDepth)
+            )
             screen = text
             lastScreenUpdate = Date()
         } catch {

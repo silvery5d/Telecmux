@@ -32,6 +32,12 @@ struct PaneFocusView: View {
     /// can disable this implicitly (by scrolling up) or re-enable by
     /// tapping the "jump to bottom" button.
     @State private var autoFollow = true
+    /// Pinch zoom for the terminal grid: 1.0 = base footnote size (max);
+    /// lower bound is computed per-layout so the full pane width fits.
+    @State private var zoomScale: CGFloat = 1.0
+    @State private var zoomGestureStart: CGFloat = 1.0
+    /// True while a buffer-deepening fetch is in flight (dedupes triggers).
+    @State private var isExtendingDepth = false
 
     /// Resolution order:
     ///   1. explicit nav target → its selectedSurfaceRef (or first surface)
@@ -143,37 +149,91 @@ struct PaneFocusView: View {
         .background(res.success ? .green.opacity(0.15) : .orange.opacity(0.2))
     }
 
+    /// Base monospaced size — matches .footnote; this is the 1.0-zoom (max)
+    /// size. Pinching down shrinks toward fit-the-pane-width.
+    private static let baseFontSize: CGFloat = 13
+    /// SF Mono's glyph advance is exactly 0.6 em.
+    private static let glyphWidthFactor: CGFloat = 0.6
+
     private var screenView: some View {
-        ScrollViewReader { proxy in
-            ZStack(alignment: .bottomTrailing) {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(CmuxScreenHighlighter.lines(
-                            controller?.screen ?? "",
-                            paneColumns: initialPane?.columns ?? 80
-                        )) { line in
-                            render(line)
+        // Terminal-grid mode: rows render un-wrapped at the pane's native
+        // column width inside a two-axis ScrollView. Pinch zooms between
+        // 1.0 (current footnote size) and "whole width fits on screen".
+        GeometryReader { geo in
+            let cols = CGFloat(max(initialPane?.columns ?? 80, 20))
+            let fitZoom = min(1.0, geo.size.width / (cols * Self.baseFontSize * Self.glyphWidthFactor))
+            ScrollViewReader { proxy in
+                ZStack(alignment: .bottomTrailing) {
+                    ScrollView([.vertical, .horizontal]) {
+                        // Plain VStack on purpose: LazyVStack only lays out
+                        // visible rows, so the content's total width drifts
+                        // as the widest row scrolls in/out of view — making
+                        // horizontal position jump around. read-screen is a
+                        // viewport (~50 rows), eager layout is cheap.
+                        VStack(alignment: .leading, spacing: 0) {
+                            // Top probe: minY grows past ~60 only when the
+                            // user over-pulls beyond the very top.
+                            GeometryReader { g in
+                                Color.clear.preference(
+                                    key: ScrollProbeKey.self,
+                                    value: ["top": g.frame(in: .named("paneScroll")).minY])
+                            }
+                            .frame(height: 0)
+                            // Identity by row index, NOT Line.id: ids are
+                            // fresh UUIDs every poll, which voids SwiftUI's
+                            // diff and rebuilds all rows — visible as a
+                            // hitch mid-scroll. Row views stay alive and
+                            // only their text updates.
+                            ForEach(Array(CmuxScreenHighlighter.lines(
+                                controller?.screen ?? "",
+                                paneColumns: initialPane?.columns ?? 80,
+                                reflow: false
+                            ).enumerated()), id: \.offset) { _, line in
+                                render(line, fontSize: Self.baseFontSize * zoomScale)
+                            }
+                            // Bottom probe doubles as the auto-scroll anchor.
+                            GeometryReader { g in
+                                Color.clear.preference(
+                                    key: ScrollProbeKey.self,
+                                    value: ["bottom": g.frame(in: .named("paneScroll")).maxY])
+                            }
+                            .frame(height: 1)
+                            .id("bottom")
                         }
-                        Color.clear.frame(height: 1).id("bottom")
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 8)
                     }
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 8)
-                }
-                .background(Color(white: 0.12))
-                // Any drag the user makes turns off auto-follow. They can
-                // tap the floating "jump" button to opt back in.
-                .simultaneousGesture(
-                    DragGesture(minimumDistance: 5)
-                        .onChanged { _ in
-                            if autoFollow { autoFollow = false }
-                        }
-                )
-                .onChange(of: controller?.lastScreenUpdate) { _, _ in
-                    guard autoFollow else { return }
-                    withAnimation(.easeOut(duration: 0.1)) {
-                        proxy.scrollTo("bottom", anchor: .bottom)
+                    .background(Color(white: 0.12))
+                    .coordinateSpace(name: "paneScroll")
+                    .onPreferenceChange(ScrollProbeKey.self) { probes in
+                        handleScrollProbes(probes,
+                                           viewportHeight: geo.size.height,
+                                           proxy: proxy)
                     }
-                }
+                    // Any drag the user makes turns off auto-follow. They can
+                    // tap the floating "jump" button to opt back in.
+                    .simultaneousGesture(
+                        DragGesture(minimumDistance: 5)
+                            .onChanged { _ in
+                                if autoFollow { autoFollow = false }
+                            }
+                    )
+                    .simultaneousGesture(
+                        MagnifyGesture()
+                            .onChanged { value in
+                                zoomScale = min(max(zoomGestureStart * value.magnification, fitZoom), 1.0)
+                            }
+                            .onEnded { _ in
+                                zoomGestureStart = zoomScale
+                            }
+                    )
+                    .onChange(of: controller?.lastScreenUpdate) { _, _ in
+                        guard autoFollow else { return }
+                        // No animation: an animated scroll racing the row
+                        // content swap reads as jitter; an instant snap to
+                        // the tail looks like a terminal.
+                        proxy.scrollTo("bottom", anchor: UnitPoint(x: 0, y: 1))
+                    }
 
                 // Right-edge floating controls: arrow-key joystick anchored
                 // at the bottom corner; "jump to bottom" appears above it
@@ -183,7 +243,7 @@ struct PaneFocusView: View {
                         Button {
                             autoFollow = true
                             withAnimation(.easeOut(duration: 0.2)) {
-                                proxy.scrollTo("bottom", anchor: .bottom)
+                                proxy.scrollTo("bottom", anchor: UnitPoint(x: 0, y: 1))
                             }
                         } label: {
                             Image(systemName: "arrow.down.circle.fill")
@@ -199,108 +259,150 @@ struct PaneFocusView: View {
                         await controller?.sendKey(surfaceRef: ref, key: key)
                     }
                 }
-                .padding(.trailing, 10)
-                .padding(.bottom, 10)
+                    .padding(.trailing, 10)
+                    .padding(.bottom, 10)
+                }
+                .animation(.easeOut(duration: 0.15), value: autoFollow)
             }
-            .animation(.easeOut(duration: 0.15), value: autoFollow)
         }
     }
 
-    /// Renders one classified line. Divider → a thin Rectangle (so a
-    /// terminal-wide horizontal line shows as one row on the phone, not as
-    /// 3-4 wrapped rows of ─ glyphs). Diff lines get a tinted background.
-    /// Everything else is plain monospaced Text with the line's color.
+    /// Renders one classified line in terminal-grid mode: single un-wrapped
+    /// row at its natural width, monospaced at the current zoom's font size.
+    /// Colors/backgrounds by kind.
     @ViewBuilder
-    private func render(_ line: CmuxScreenHighlighter.Line) -> some View {
-        let mono = Font.system(.footnote, design: .monospaced)
+    private func render(_ line: CmuxScreenHighlighter.Line, fontSize: CGFloat) -> some View {
         switch line.kind {
         case .divider:
-            Rectangle()
-                .fill(Color.gray.opacity(0.45))
-                .frame(height: 1)
-                .padding(.vertical, 3)
+            Text(CmuxScreenHighlighter.gridAttributed(line.text, fontSize: fontSize))
+                .foregroundColor(Color.gray.opacity(0.6))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
 
         case .codeFence:
-            Text(verbatim: line.text)
-                .font(mono)
+            Text(CmuxScreenHighlighter.gridAttributed(line.text, fontSize: fontSize))
                 .foregroundColor(Color(white: 0.5))
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .textSelection(.enabled)
 
         case .diffAdded:
-            Text(verbatim: line.text)
-                .font(mono)
+            Text(CmuxScreenHighlighter.gridAttributed(line.text, fontSize: fontSize))
                 .foregroundColor(.white)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .padding(.horizontal, 4)
                 .background(Color.blue.opacity(0.22))
                 .textSelection(.enabled)
 
         case .diffRemoved:
-            Text(verbatim: line.text)
-                .font(mono)
+            Text(CmuxScreenHighlighter.gridAttributed(line.text, fontSize: fontSize))
                 .foregroundColor(.white)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .padding(.horizontal, 4)
                 .background(Color.red.opacity(0.22))
                 .textSelection(.enabled)
 
         case .codeBody:
-            Text(verbatim: line.text)
-                .font(mono)
+            Text(CmuxScreenHighlighter.gridAttributed(line.text, fontSize: fontSize))
                 .foregroundColor(.white)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .textSelection(.enabled)
 
         case .modeIndicator(let color):
-            Text(verbatim: line.text)
-                .font(mono.bold())
+            Text(CmuxScreenHighlighter.gridAttributed(line.text, fontSize: fontSize, weight: .bold))
                 .foregroundColor(color)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .textSelection(.enabled)
 
         case .status:
-            Text(verbatim: line.text)
-                .font(mono)
+            Text(CmuxScreenHighlighter.gridAttributed(line.text, fontSize: fontSize))
                 .foregroundColor(.gray)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .textSelection(.enabled)
 
         case .userInput:
             // Reverse video — black text on a near-white fill, terminal
             // convention for the user's own command echoes.
-            Text(verbatim: line.text)
-                .font(mono)
+            Text(CmuxScreenHighlighter.gridAttributed(line.text, fontSize: fontSize))
                 .foregroundColor(.black)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .padding(.horizontal, 4)
                 .background(Color(white: 0.92))
                 .textSelection(.enabled)
 
+        case .toolResult(let isError):
+            // "⎿ Read 124 lines" — secondary info, dimmed; errors pop red.
+            Text(CmuxScreenHighlighter.gridAttributed(line.text, fontSize: fontSize))
+                .foregroundColor(isError ? Color(red: 1.0, green: 0.45, blue: 0.4) : Color(white: 0.55))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .textSelection(.enabled)
+
+        case .todo(let done):
+            Text(CmuxScreenHighlighter.gridAttributed(line.text, fontSize: fontSize))
+                .foregroundColor(done ? Color(white: 0.5) : Color(white: 0.92))
+                .strikethrough(done, color: Color(white: 0.5))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .textSelection(.enabled)
+
+        case .menuOption:
+            // Un-selected numbered choices — brighter + semibold so the
+            // option list stands out from prose.
+            Text(CmuxScreenHighlighter.gridAttributed(line.text, fontSize: fontSize, weight: .semibold))
+                .foregroundColor(.white)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .textSelection(.enabled)
+
+        case .tableRow:
+            // Normally handled by tableBlock(); this fallback covers a lone
+            // table row that slipped through grouping.
+            Text(CmuxScreenHighlighter.gridAttributed(line.text, fontSize: fontSize))
+                .foregroundColor(CmuxScreenHighlighter.defaultColor)
+                .lineLimit(1)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .textSelection(.enabled)
+
         case .normal(let color):
-            Text(verbatim: line.text.isEmpty ? " " : line.text)
-                .font(mono)
+            Text(CmuxScreenHighlighter.gridAttributed(line.text.isEmpty ? " " : line.text, fontSize: fontSize))
                 .foregroundColor(color)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .textSelection(.enabled)
         }
     }
 
+    /// Live (per-keystroke) input is parked: the per-character SSH
+    /// round-trip latency didn't justify itself in practice. Flip this to
+    /// bring back the bolt toggle + LiveInputField wiring, which is kept
+    /// intact below and in Views/LiveInputField.swift.
+    private static let liveInputEnabled = false
+
     private var inputBar: some View {
         HStack(alignment: .bottom, spacing: 8) {
             // Live toggle — bolt on = keystrokes stream straight to cmux.
-            Button {
-                liveInput.toggle()
-                liveText = ""
-            } label: {
-                Image(systemName: liveInput ? "bolt.fill" : "bolt.slash")
-                    .font(.system(size: 20))
-                    .foregroundStyle(liveInput ? .yellow : .gray)
-                    .frame(width: 30, height: 36)
+            if Self.liveInputEnabled {
+                Button {
+                    liveInput.toggle()
+                    liveText = ""
+                } label: {
+                    Image(systemName: liveInput ? "bolt.fill" : "bolt.slash")
+                        .font(.system(size: 20))
+                        .foregroundStyle(liveInput ? .yellow : .gray)
+                        .frame(width: 30, height: 36)
+                }
+                .accessibilityLabel(liveInput ? "Live input on" : "Live input off")
             }
-            .accessibilityLabel(liveInput ? "Live input on" : "Live input off")
 
-            if liveInput {
+            if Self.liveInputEnabled && liveInput {
                 LiveInputField(
                     text: $liveText,
                     placeholder: "Live → surface",
@@ -427,6 +529,47 @@ struct PaneFocusView: View {
 
     // MARK: - actions
 
+    // MARK: - seamless scrollback
+
+    /// Scroll-geometry handler. No modes: polling always carries several
+    /// screens of history. Nearing the loaded top quietly deepens the
+    /// buffer; arriving at the bottom resumes tail-follow.
+    private func handleScrollProbes(_ probes: [String: CGFloat],
+                                    viewportHeight: CGFloat,
+                                    proxy: ScrollViewProxy) {
+        if let top = probes["top"],
+           top > -(viewportHeight * 2),          // less than 2 screens above
+           !isExtendingDepth {
+            Task { await extendDepth(proxy: proxy) }
+        }
+        if !autoFollow,
+           let bottom = probes["bottom"],
+           bottom <= viewportHeight + 30 {
+            autoFollow = true                    // back at the live tail
+        }
+    }
+
+    /// Deepen the scrollback buffer by 300 rows and restore the viewport to
+    /// the same content row (prepended rows shift indices by a known count,
+    /// and rows are identified by index — so scrolling to `added` puts the
+    /// old first row back at the top, no visual jump).
+    private func extendDepth(proxy: ScrollViewProxy) async {
+        guard let ref = surfaceRef, let c = controller else { return }
+        let oldRows = c.screen.split(separator: "\n", omittingEmptySubsequences: false).count
+        // Fewer rows than requested = history exhausted; nothing to extend.
+        guard oldRows >= c.scrollbackDepth, c.scrollbackDepth < 3000 else { return }
+        isExtendingDepth = true
+        defer { isExtendingDepth = false }
+
+        c.scrollbackDepth = min(c.scrollbackDepth + 300, 3000)
+        await c.refreshScreen(surfaceRef: ref)
+        let newRows = c.screen.split(separator: "\n", omittingEmptySubsequences: false).count
+        let added = newRows - oldRows
+        if added > 0, !autoFollow {
+            proxy.scrollTo(added, anchor: UnitPoint(x: 0, y: 0))
+        }
+    }
+
     private func bootstrap() async {
         guard let host else { return }
         let c = CmuxController(ssh: ssh)
@@ -471,5 +614,14 @@ struct PaneFocusView: View {
                 await controller?.refreshScreen(surfaceRef: ref)
             }
         }
+    }
+}
+
+/// Scroll-geometry probe values keyed "top" / "bottom", merged across the
+/// two GeometryReader probes inside the pane's scroll content.
+private struct ScrollProbeKey: PreferenceKey {
+    static var defaultValue: [String: CGFloat] = [:]
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue()) { _, new in new }
     }
 }
